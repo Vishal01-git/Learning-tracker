@@ -1,0 +1,5 @@
+# SQLite database file
+database.sqlite
+node_modules
+dist
+.env
