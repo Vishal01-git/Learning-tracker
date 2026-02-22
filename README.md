@@ -58,7 +58,7 @@ A premium, high-performance web application designed for consistent skill-buildi
    Create a `.env` file in the root:
    ```env
    ADMIN_PASSWORD=your_admin_password
-   DATABASE_PATH=database.sqlite
+   DATABASE_PATH=your_supabase_string
    ```
 
 3. **Run Locally**:
@@ -66,34 +66,6 @@ A premium, high-performance web application designed for consistent skill-buildi
    npm run dev
    ```
    Visit `http://localhost:3000` to start tracking!
-
----
-
-## 🌍 Deployment (Hosting for Free)
-
-Since this app uses WebSockets and needs persistent storage, we use **Render** and **Supabase**:
-
-### 1. Database (Supabase)
-1. Create a project on [Supabase.com](https://supabase.com/).
-2. Go to **Project Settings** -> **Database**.
-3. Copy the **Connection String** (URI). It looks like: `postgresql://postgres:[PASSWORD]@db.[REF].supabase.co:5432/postgres`.
-
-### 2. Hosting (Render)
-1. Connect your GitHub repo to [Render.com](https://render.com/).
-2. Create a new **Web Service**.
-3. **Build Command**: `npm install && npm run build`
-4. **Start Command**: `npm start`
-5. Add **Environment Variables**:
-   - `DATABASE_URL`: (Paste your Supabase URI from step 1)
-   - `ADMIN_PASSWORD`: (Your choice for dashboard access)
-   - `NODE_ENV`: `production`
-
-Render will automatically detect the WebSockets and host your site on a `.onrender.com` URL.
-
-### 3. Mobile Installation (PWA)
-1. Once hosted, open the URL in Chrome on your Android device.
-2. Tap the **three dots (⋮)** and select **"Install app"**.
-3. Launch **Learning Tracker** directly from your app drawer.
 
 ---
 
