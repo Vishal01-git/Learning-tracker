@@ -30,7 +30,7 @@ import confetti from 'canvas-confetti';
 import { motion, AnimatePresence } from 'framer-motion';
 
 // Responsive constants
-const GET_DAYS_TO_SHOW = () => window.innerWidth < 768 ? 7 : 14;
+const GET_DAYS_TO_SHOW = () => window.innerWidth < 768 ? 91 : 371; // 13 weeks vs 53 weeks
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
@@ -311,7 +311,18 @@ export default function App() {
   const today = new Date().toISOString().split('T')[0];
   const lastDays = useMemo(() => {
     const days = [];
-    for (let i = daysToShow - 1; i >= 0; i--) {
+    // Ensure we start from a Sunday to align the grid perfectly
+    const d = new Date();
+    // Find the current day of the week (0=Sun, 1=Mon, ..., 6=Sat)
+    const dayOfWeek = d.getDay();
+    // We want the total days to be a multiple of 7 to fill the columns
+    const numColumns = Math.ceil(daysToShow / 7);
+    const totalDays = numColumns * 7;
+
+    // We subtract 'dayOfWeek' to ensure the last day in the grid is a Saturday or today
+    // Actually, GitHub's last column is usually the current week.
+    // If today is Wednesday, the last column will have 4 entries (Sun, Mon, Tue, Wed).
+    for (let i = totalDays - (7 - (dayOfWeek + 1)); i >= 0; i--) {
       const d = new Date();
       d.setDate(d.getDate() - i);
       days.push(d.toISOString().split('T')[0]);
@@ -717,55 +728,119 @@ export default function App() {
             <div className="flex flex-col md:flex-row md:items-center justify-between mb-6 gap-4">
               <h2 className="font-serif italic text-xl">Consistency Matrix</h2>
               <div className="flex flex-wrap items-center gap-4 text-[10px] uppercase tracking-widest font-bold text-white/40">
+                <span>Less</span>
                 <div className="flex items-center gap-1">
-                  <div className="w-2 h-2 bg-white/5 rounded-sm"></div> Empty
+                  <div className="w-2.5 h-2.5 bg-[#2A2A2A] rounded-sm"></div>
+                  <div className="w-2.5 h-2.5 bg-[#064e3b] rounded-sm"></div>
+                  <div className="w-2.5 h-2.5 bg-[#059669] rounded-sm"></div>
+                  <div className="w-2.5 h-2.5 bg-[#10b981] rounded-sm"></div>
+                  <div className="w-2.5 h-2.5 bg-[#34d399] rounded-sm"></div>
                 </div>
-                <div className="flex items-center gap-1">
-                  <div className="w-2 h-2 bg-emerald-900 rounded-sm"></div> Partial
-                </div>
-                <div className="flex items-center gap-1">
-                  <div className="w-2 h-2 bg-emerald-500 rounded-sm"></div> Goal
-                </div>
+                <span>More</span>
               </div>
             </div>
 
-            <Stage width={canvasSize.width - 48} height={280}>
-              <Layer>
-                {userTasks.map((task, taskIdx) => (
-                  <Group key={task.id} y={taskIdx * 60}>
+            <div className="overflow-x-auto pb-4 custom-scrollbar no-scrollbar">
+              <Stage
+                width={Math.max(canvasSize.width - 48, (lastDays.length / 7) * (window.innerWidth < 768 ? 22 : 14) + 60)}
+                height={window.innerWidth < 768 ? 200 : 150}
+              >
+                <Layer>
+                  {/* Day Labels */}
+                  {['Mon', 'Wed', 'Fri'].map((day, i) => (
                     <Text
-                      text={task.title}
-                      fontSize={11}
+                      key={day}
+                      text={day}
+                      x={window.innerWidth < 768 ? 5 : 0}
+                      y={window.innerWidth < 768 ? 42 + (i * 2 + 1) * 22 : 28 + (i * 2 + 1) * 14}
+                      fontSize={window.innerWidth < 768 ? 10 : 9}
                       fontFamily="Inter"
                       fill="#FFFFFF"
-                      opacity={0.5}
-                      y={5}
+                      opacity={0.3}
                     />
-                    {lastDays.map((date, dayIdx) => {
-                      const log = state.logs.find(l => l.user_id === user?.id && l.task_id === task.id && l.date === date);
-                      const value = log?.value || 0;
-                      const isComplete = value >= task.target_daily;
-                      const isPartial = value > 0 && value < task.target_daily;
+                  ))}
 
+                  {/* Heatmap Grid */}
+                  {lastDays.map((date, dayIdx) => {
+                    const col = Math.floor(dayIdx / 7);
+                    const row = dayIdx % 7;
+                    const isMobile = window.innerWidth < 768;
+                    const squareSize = isMobile ? 18 : 11;
+                    const pitch = isMobile ? 22 : 14;
+                    const startX = isMobile ? 40 : 30;
+                    const startY = isMobile ? 35 : 25;
+
+                    const x = startX + col * pitch;
+                    const y = startY + row * pitch;
+
+                    const mandatoryTasks = state.tasks.filter(t => t.user_id === user?.id && t.is_mandatory);
+                    const dayLogs = state.logs.filter(l => l.user_id === user?.id && l.date === date);
+
+                    let intensity = 0; // 0 to 4
+                    if (mandatoryTasks.length > 0) {
+                      const completedCount = mandatoryTasks.filter(t => {
+                        const log = dayLogs.find(l => l.task_id === t.id);
+                        return (log?.value || 0) >= t.target_daily;
+                      }).length;
+
+                      const ratio = completedCount / mandatoryTasks.length;
+                      if (ratio === 0 && dayLogs.some(l => l.value > 0)) intensity = 1;
+                      else if (ratio > 0 && ratio < 0.5) intensity = 2;
+                      else if (ratio >= 0.5 && ratio < 1) intensity = 3;
+                      else if (ratio === 1) intensity = 4;
+                    }
+
+                    const colors = ['#2A2A2A', '#064e3b', '#059669', '#10b981', '#34d399'];
+
+                    // Month Labels
+                    const d = new Date(date);
+                    if (row === 0 && d.getDate() <= 7) {
+                      const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
                       return (
-                        <Rect
-                          key={date}
-                          x={dayIdx * ((canvasSize.width - 80) / daysToShow)}
-                          y={25}
-                          width={(canvasSize.width - 120) / daysToShow}
-                          height={24}
-                          fill={isComplete ? '#10b981' : isPartial ? '#064e3b' : '#2A2A2A'}
-                          cornerRadius={4}
-                          stroke={date === selectedDate ? '#FFFFFF' : 'transparent'}
-                          strokeWidth={1}
-                          onClick={() => setSelectedDate(date)}
-                        />
+                        <Group key={date}>
+                          <Text
+                            text={monthNames[d.getMonth()]}
+                            x={x}
+                            y={isMobile ? 10 : 5}
+                            fontSize={isMobile ? 11 : 9}
+                            fontFamily="Inter"
+                            fill="#FFFFFF"
+                            opacity={0.4}
+                            fontStyle="bold"
+                          />
+                          <Rect
+                            x={x}
+                            y={y}
+                            width={squareSize}
+                            height={squareSize}
+                            fill={colors[intensity]}
+                            cornerRadius={2}
+                            stroke={date === selectedDate ? '#FFFFFF' : 'transparent'}
+                            strokeWidth={1}
+                            onClick={() => setSelectedDate(date)}
+                          />
+                        </Group>
                       );
-                    })}
-                  </Group>
-                ))}
-              </Layer>
-            </Stage>
+                    }
+
+                    return (
+                      <Rect
+                        key={date}
+                        x={x}
+                        y={y}
+                        width={squareSize}
+                        height={squareSize}
+                        fill={colors[intensity]}
+                        cornerRadius={2}
+                        stroke={date === selectedDate ? '#FFFFFF' : 'transparent'}
+                        strokeWidth={1}
+                        onClick={() => setSelectedDate(date)}
+                      />
+                    );
+                  })}
+                </Layer>
+              </Stage>
+            </div>
           </div>
 
           {/* Date Selector & Checklist */}
