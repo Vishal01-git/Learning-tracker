@@ -8,6 +8,7 @@ export function cn(...inputs: ClassValue[]) {
 export interface User {
   id: string;
   name: string;
+  username?: string;
   room_id: string;
 }
 

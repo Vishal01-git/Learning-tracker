@@ -5,7 +5,6 @@ import { createServer } from "http";
 import Database from "better-sqlite3";
 import path from "path";
 import "dotenv/config";
-import { GoogleGenerativeAI } from "@google/generative-ai";
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -23,6 +22,7 @@ db.exec(`
 
   CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,
+    username TEXT UNIQUE NOT NULL,
     name TEXT NOT NULL,
     room_id TEXT,
     FOREIGN KEY(room_id) REFERENCES rooms(id)
@@ -49,6 +49,13 @@ db.exec(`
     FOREIGN KEY(task_id) REFERENCES tasks(id)
   );
 `);
+
+try {
+  db.exec("ALTER TABLE users ADD COLUMN username TEXT");
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username)");
+} catch (e) {
+  // Column already exists
+}
 
 try {
   db.exec("ALTER TABLE logs ADD COLUMN details TEXT");
@@ -91,30 +98,55 @@ async function startServer() {
   });
 
   app.post("/api/init-user", (req, res) => {
-    const { name, roomId } = req.body;
+    const { name, roomId, username } = req.body;
+    if (!username || !name) {
+      return res.status(400).json({ error: "Name and Username are required" });
+    }
+
+    const cleanUsername = username.toLowerCase().trim().replace(/^@/, '');
 
     // Ensure room exists
     db.prepare("INSERT OR IGNORE INTO rooms (id, name) VALUES (?, ?)").run(roomId, `Room ${roomId}`);
 
-    // Check if user exists in this room
-    let user = db.prepare("SELECT * FROM users WHERE name = ? AND room_id = ?").get(name, roomId) as any;
+    // Check if username exists GLOBALLY
+    let user = db.prepare("SELECT * FROM users WHERE username = ?").get(cleanUsername) as any;
 
     if (!user) {
+      // Register New User
       const userId = `user_${Math.random().toString(36).substr(2, 9)}`;
-      db.prepare("INSERT INTO users (id, name, room_id) VALUES (?, ?, ?)").run(userId, name, roomId);
-      user = { id: userId, name, room_id: roomId };
+      try {
+        db.prepare("INSERT INTO users (id, name, username, room_id) VALUES (?, ?, ?, ?)").run(userId, name, cleanUsername, roomId);
+        user = { id: userId, name, username: cleanUsername, room_id: roomId };
 
-      // Default tasks for new user
-      const defaultTasks = [
-        { id: `${userId}_sql`, title: "SQL Practice (2 questions)", type: "sql", target: 2, is_mandatory: 1 },
-        { id: `${userId}_pyspark`, title: "PySpark Learning", type: "pyspark", target: 1, is_mandatory: 1 },
-        { id: `${userId}_project`, title: "DE Project Work", type: "project", target: 1, is_mandatory: 1 }
-      ];
-      const insertTask = db.prepare("INSERT INTO tasks (id, user_id, title, type, target_daily, is_mandatory) VALUES (?, ?, ?, ?, ?, ?)");
-      defaultTasks.forEach(t => insertTask.run(t.id, userId, t.title, t.type, t.target, t.is_mandatory));
+        // Default tasks for new user
+        const defaultTasks = [
+          { id: `${userId}_sql`, title: "SQL Practice (2 questions)", type: "sql", target: 2, is_mandatory: 1 },
+          { id: `${userId}_pyspark`, title: "PySpark Learning", type: "pyspark", target: 1, is_mandatory: 1 },
+          { id: `${userId}_project`, title: "DE Project Work", type: "project", target: 1, is_mandatory: 1 }
+        ];
+        const insertTask = db.prepare("INSERT INTO tasks (id, user_id, title, type, target_daily, is_mandatory) VALUES (?, ?, ?, ?, ?, ?)");
+        defaultTasks.forEach(t => insertTask.run(t.id, userId, t.title, t.type, t.target, t.is_mandatory));
+
+        return res.json({ success: true, userId: user.id });
+      } catch (err) {
+        return res.status(500).json({ error: "Failed to create user. Handle might be taken." });
+      }
+    } else {
+      // Login Existing User
+      // Full proof check: Does the provided name match the owner of this username?
+      if (user.name.toLowerCase() !== name.toLowerCase()) {
+        return res.status(401).json({
+          error: `The handle '@${cleanUsername}' is already taken. Please choose a different username.`
+        });
+      }
+
+      // Update room_id if they are joining a different room
+      if (user.room_id !== roomId) {
+        db.prepare("UPDATE users SET room_id = ? WHERE id = ?").run(roomId, user.id);
+      }
+
+      res.json({ success: true, userId: user.id });
     }
-
-    res.json({ success: true, userId: user.id });
   });
 
   // WebSocket Logic
@@ -220,37 +252,61 @@ async function startServer() {
     });
   });
 
-  // Gemini AI Tip Generator
-  const genAI = process.env.GEMINI_API_KEY ? new GoogleGenerativeAI(process.env.GEMINI_API_KEY) : null;
-  const model = genAI?.getGenerativeModel({ model: "gemini-1.5-flash" });
-
-  app.get("/api/tips", async (req, res) => {
-    if (!model) {
-      return res.json({
-        tips: [
-          "Focus on Window Functions in SQL",
-          "Understand PySpark RDD vs Dataframes",
-          "Document your project architecture",
-          "Practice LeetCode Hard SQL weekly"
-        ]
-      });
-    }
-
+  // Leaderboard Logic
+  app.get("/api/leaderboard", (req, res) => {
     try {
-      const prompt = `You are a world-class learning coach. 
-      Generate 4 concise, high-impact daily study/learning tips for someone trying to master new technical skills and maintain consistency. 
-      Focus on productivity, memory retention, and habit building. 
-      Keep each tip under 15 words. Return only the tips as a JSON list of strings.`;
+      const allUsers = db.prepare("SELECT id, name, room_id FROM users").all() as any[];
+      const allTasks = db.prepare("SELECT id, user_id, target_daily FROM tasks WHERE is_mandatory = 1").all() as any[];
+      const allLogs = db.prepare("SELECT user_id, task_id, date, value FROM logs").all() as any[];
 
-      const result = await model.generateContent(prompt);
-      const text = result.response.text();
-      // Basic JSON extraction from markdown
-      const jsonMatch = text.match(/\[.*\]/s);
-      const tips = jsonMatch ? JSON.parse(jsonMatch[0]) : [];
-      res.json({ tips });
+      const leaderboard = allUsers.map(u => {
+        const userTasks = allTasks.filter(t => t.user_id === u.id);
+        const userLogs = allLogs.filter(l => l.user_id === u.id);
+
+        if (userTasks.length === 0) return { ...u, streak: 0 };
+
+        const datesWithLogs = [...new Set(userLogs.map(l => l.date))].sort().reverse();
+        const completedDates: string[] = [];
+
+        for (const date of datesWithLogs) {
+          const isDayComplete = userTasks.every(task => {
+            const log = userLogs.find(l => l.task_id === task.id && l.date === date);
+            return (log?.value || 0) >= task.target_daily;
+          });
+          if (isDayComplete) {
+            completedDates.push(date);
+          }
+        }
+
+        let streak = 0;
+        let current = new Date();
+        current.setHours(23, 59, 59, 999); // End of today
+
+        for (let i = 0; i < completedDates.length; i++) {
+          const logDate = new Date(completedDates[i]);
+          logDate.setHours(12, 0, 0, 0); // Middle of that day
+          const diff = Math.floor((current.getTime() - logDate.getTime()) / (1000 * 3600 * 24));
+
+          if (diff <= 1) {
+            streak++;
+            current = logDate;
+            current.setHours(12, 0, 0, 0);
+          } else {
+            break;
+          }
+        }
+        return { name: u.name, username: u.username, roomId: u.room_id, streak };
+      });
+
+      const sortedLeaderboard = leaderboard
+        .filter(u => u.streak > 0)
+        .sort((a, b) => b.streak - a.streak)
+        .slice(0, 5);
+
+      res.json({ leaderboard: sortedLeaderboard });
     } catch (err) {
-      console.error("Gemini Error:", err);
-      res.json({ tips: ["Focus on Window Functions in SQL", "Understand PySpark RDD vs Dataframes"] });
+      console.error("Leaderboard Error:", err);
+      res.status(500).json({ error: "Failed to generate leaderboard" });
     }
   });
 

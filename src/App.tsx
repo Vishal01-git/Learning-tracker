@@ -6,6 +6,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Stage, Layer, Rect, Text, Group, Line } from 'react-konva';
 import {
+  Brain,
   Database,
   Terminal,
   Briefcase,
@@ -23,8 +24,34 @@ import {
   ExternalLink,
   Info,
   Trash2,
-  Edit2
+  Edit2,
+  Trophy,
+  Medal
 } from 'lucide-react';
+
+const AppLogo = ({ size = "md" }: { size?: "sm" | "md" | "lg" }) => {
+  const iconSizes = {
+    sm: "w-4 h-4",
+    md: "w-5 h-5",
+    lg: "w-6 h-6"
+  };
+  const containerPadding = {
+    sm: "p-1.5",
+    md: "p-2",
+    lg: "p-3"
+  };
+  const barWidth = {
+    sm: "w-6",
+    md: "w-8",
+    lg: "w-10"
+  };
+
+  return (
+    <div className={cn("bg-white rounded-xl shadow-sm flex items-center justify-center", containerPadding[size])}>
+      <Brain className={cn("text-black", iconSizes[size])} />
+    </div>
+  );
+};
 import { cn, User, Task, Log, AppState } from './types';
 import confetti from 'canvas-confetti';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -38,7 +65,9 @@ export default function App() {
   const [state, setState] = useState<AppState>({ users: [], tasks: [], logs: [] });
   const [isJoining, setIsJoining] = useState(true);
   const [userName, setUserName] = useState('');
+  const [handle, setHandle] = useState('');
   const [inputRoomId, setInputRoomId] = useState('default');
+  const [joinError, setJoinError] = useState<string | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
   const [canvasSize, setCanvasSize] = useState({ width: 800, height: 400 });
   const [daysToShow, setDaysToShow] = useState(GET_DAYS_TO_SHOW());
@@ -58,8 +87,8 @@ export default function App() {
   useEffect(() => {
     console.log("App mounted. Checking session...");
     try {
-      const savedUser = localStorage.getItem('de_catalyst_user');
-      const savedRoomId = localStorage.getItem('de_catalyst_room_id');
+      const savedUser = localStorage.getItem('learning_tracker_user');
+      const savedRoomId = localStorage.getItem('learning_tracker_room_id');
       if (savedUser && savedRoomId) {
         const u = JSON.parse(savedUser);
         if (u && u.id) {
@@ -72,8 +101,8 @@ export default function App() {
       }
     } catch (e) {
       console.error("Session restore error:", e);
-      localStorage.removeItem('de_catalyst_user');
-      localStorage.removeItem('de_catalyst_room_id');
+      localStorage.removeItem('learning_tracker_user');
+      localStorage.removeItem('learning_tracker_room_id');
     }
     return () => {
       if (socketRef.current) {
@@ -89,19 +118,22 @@ export default function App() {
   const [adminPassword, setAdminPassword] = useState('');
   const [adminToken, setAdminToken] = useState<string | null>(null);
   const [adminData, setAdminData] = useState<{ users: User[], tasks: Task[], logs: Log[], rooms: any[] } | null>(null);
-  const [tips, setTips] = useState<string[]>([]);
+  const [leaderboard, setLeaderboard] = useState<{ name: string, roomId: string, streak: number }[]>([]);
+
+  const fetchLeaderboard = async () => {
+    try {
+      const res = await fetch('/api/leaderboard');
+      const data = await res.json();
+      setLeaderboard(data.leaderboard || []);
+    } catch (err) {
+      console.error("Failed to fetch leaderboard", err);
+    }
+  };
 
   useEffect(() => {
-    const fetchTips = async () => {
-      try {
-        const res = await fetch('/api/tips');
-        const data = await res.json();
-        setTips(data.tips);
-      } catch (err) {
-        console.error("Failed to fetch tips", err);
-      }
-    };
-    fetchTips();
+    fetchLeaderboard();
+    const interval = setInterval(fetchLeaderboard, 30000); // Refresh every 30s
+    return () => clearInterval(interval);
   }, []);
 
   useEffect(() => {
@@ -129,22 +161,28 @@ export default function App() {
     e.preventDefault();
     if (!userName.trim()) return;
 
+    setJoinError(null);
     const res = await fetch('/api/init-user', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: userName, roomId: inputRoomId })
+      body: JSON.stringify({ name: userName, roomId: inputRoomId, username: handle })
     });
     const data = await res.json();
 
+    if (!res.ok) {
+      setJoinError(data.error || 'Failed to join');
+      return;
+    }
+
     if (data.success) {
       const userId = data.userId;
-      const newUser = { id: userId, name: userName, room_id: inputRoomId };
+      const newUser = { id: userId, name: userName, room_id: inputRoomId, username: handle };
       setUser(newUser);
       setRoomId(inputRoomId);
       setIsJoining(false);
 
-      localStorage.setItem('de_catalyst_user', JSON.stringify(newUser));
-      localStorage.setItem('de_catalyst_room_id', inputRoomId);
+      localStorage.setItem('learning_tracker_user', JSON.stringify(newUser));
+      localStorage.setItem('learning_tracker_room_id', inputRoomId);
 
       connectSocket(userId, inputRoomId);
       fetchState(inputRoomId);
@@ -152,8 +190,8 @@ export default function App() {
   };
 
   const handleLogout = () => {
-    localStorage.removeItem('de_catalyst_user');
-    localStorage.removeItem('de_catalyst_room_id');
+    localStorage.removeItem('learning_tracker_user');
+    localStorage.removeItem('learning_tracker_room_id');
     setUser(null);
     setRoomId('default');
     setUserName('');
@@ -343,7 +381,7 @@ export default function App() {
       .filter(l => l.user_id === userId)
       .map(l => l.date);
 
-    const uniqueDates = [...new Set(datesWithLogs)].sort().reverse();
+    const uniqueDates = [...new Set(datesWithLogs)].sort().reverse() as string[];
     const completedDates: string[] = [];
 
     for (const date of uniqueDates) {
@@ -480,9 +518,7 @@ export default function App() {
             className="flex flex-col sm:flex-row sm:items-center justify-between mb-8 md:mb-12 gap-4"
           >
             <div className="flex items-center gap-4">
-              <div className="p-2 sm:p-3 bg-white rounded-xl">
-                <Settings2 className="text-black w-5 h-5 sm:w-6 sm:h-6" />
-              </div>
+              <AppLogo size="lg" />
               <h1 className="text-xl sm:text-3xl font-bold tracking-tight">Admin Dashboard</h1>
             </div>
             <motion.button
@@ -508,7 +544,9 @@ export default function App() {
                       className="flex items-center justify-between p-4 bg-[#ffffff0d] rounded-xl border border-[#ffffff0d] hover:border-[#ffffff33] transition-all"
                     >
                       <div>
-                        <div className="font-bold text-sm">{u.name}</div>
+                        <div className="font-bold text-sm">
+                          {u.name} <span className="text-white/30 font-medium ml-1">@{u.username}</span>
+                        </div>
                         <div className="text-[10px] text-[#ffffff66] uppercase tracking-widest font-bold">Room: {u.room_id}</div>
                       </div>
                       <button
@@ -538,6 +576,9 @@ export default function App() {
                       <div className="flex-1 min-w-0">
                         <div className="flex flex-wrap items-center gap-2 mb-1">
                           <span className="text-[9px] font-bold bg-[#ffffff1a] px-2 py-0.5 rounded uppercase tracking-widest">{l.date}</span>
+                          <span className="text-[10px] font-bold text-emerald-400">
+                            @{adminData.users.find(u => u.id === l.user_id)?.username || 'unknown'}
+                          </span>
                           <span className="text-[10px] font-bold text-[#ffffff99]">ID: {l.task_id}</span>
                         </div>
                         <div className="text-xs text-[#ffffffcc] truncate">{l.details || "No details provided"}</div>
@@ -565,21 +606,30 @@ export default function App() {
       <div className="min-h-screen bg-[#0A0A0A] flex items-center justify-center p-6 font-sans">
         <div className="max-w-md w-full bg-[#1A1A1A] p-8 rounded-2xl shadow-xl border border-white/5">
           <div className="flex items-center gap-3 mb-8">
-            <div className="p-3 bg-white rounded-xl">
-              <Database className="text-black w-6 h-6" />
-            </div>
+            <AppLogo size="lg" />
             <h1 className="text-2xl font-bold tracking-tight text-white">Learning Tracker</h1>
           </div>
 
           <form onSubmit={handleJoin} className="space-y-6">
             <div>
-              <label className="block text-xs font-semibold uppercase tracking-wider text-white/50 mb-2">Your Name</label>
+              <label className="block text-xs font-semibold uppercase tracking-wider text-white/50 mb-2">Full Name</label>
               <input
                 type="text"
                 value={userName}
                 onChange={(e) => setUserName(e.target.value)}
                 className="w-full px-4 py-3 bg-[#2A2A2A] border-none rounded-xl focus:ring-2 focus:ring-white outline-none transition-all text-white"
                 placeholder="e.g. Alex Chen"
+                required
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold uppercase tracking-wider text-white/50 mb-2">Unique Handle (@username)</label>
+              <input
+                type="text"
+                value={handle}
+                onChange={(e) => setHandle(e.target.value)}
+                className="w-full px-4 py-3 bg-[#2A2A2A] border-none rounded-xl focus:ring-2 focus:ring-white outline-none transition-all text-white"
+                placeholder="vchen99"
                 required
               />
             </div>
@@ -593,6 +643,16 @@ export default function App() {
                 placeholder="default"
               />
             </div>
+
+            {joinError && (
+              <motion.div
+                initial={{ opacity: 0, y: -10 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="p-3 bg-red-500/10 border border-red-500/20 rounded-xl text-red-500 text-xs font-bold text-center"
+              >
+                {joinError}
+              </motion.div>
+            )}
             <motion.button
               whileHover={{ scale: 1.05 }}
               whileTap={{ scale: 0.95 }}
@@ -676,9 +736,7 @@ export default function App() {
       <header className="bg-[#1A1A1A] border-b border-white/10 px-4 sm:px-6 py-3 sm:py-4 flex items-center justify-between sticky top-0 z-50">
         <div className="flex items-center gap-8">
           <div className="flex items-center gap-2">
-            <div className="p-1.5 sm:p-2 bg-white rounded-lg">
-              <Database className="text-black w-4 h-4 sm:w-5 sm:h-5" />
-            </div>
+            <AppLogo size="sm" />
             <span className="font-bold text-base sm:text-lg tracking-tight">Learning Tracker</span>
           </div>
 
@@ -708,6 +766,7 @@ export default function App() {
         <div className="flex items-center gap-4">
           <div className="text-right hidden sm:block">
             <div className="text-sm font-bold">{user?.name}</div>
+            <div className="text-[10px] text-white/40 font-bold tracking-tight">@{user?.username}</div>
           </div>
           <motion.button
             whileHover={{ scale: 1.1 }}
@@ -1013,23 +1072,47 @@ export default function App() {
           </div>
 
           <div className="bg-white dark:bg-[#1A1A1A] rounded-2xl border border-black/10 dark:border-white/10 p-6 shadow-sm">
-            <h2 className="font-bold mb-4 flex items-center gap-2">
-              <CheckCircle2 className="w-5 h-5 text-emerald-500" />
-              Preparation Tips
-            </h2>
-            <ul className="space-y-4">
-              {(tips.length > 0 ? tips : [
-                "Focus on Window Functions in SQL",
-                "Understand PySpark RDD vs Dataframes",
-                "Document your project architecture",
-                "Practice LeetCode Hard SQL weekly"
-              ]).map((tip, i) => (
-                <li key={i} className="flex gap-3 text-sm text-black/60 dark:text-white/60">
-                  <div className="mt-1 w-1.5 h-1.5 rounded-full bg-black/20 dark:bg-white/20 shrink-0" />
-                  {tip}
-                </li>
-              ))}
-            </ul>
+            <div className="flex items-center justify-between mb-6">
+              <h2 className="font-bold flex items-center gap-2">
+                <Trophy className="w-5 h-5 text-yellow-500" />
+                Global Leaderboard
+              </h2>
+              <div className="text-[10px] font-bold text-white/30 uppercase tracking-widest">Top 5</div>
+            </div>
+
+            <div className="space-y-4">
+              {leaderboard.length > 0 ? (
+                leaderboard.map((entry, i) => (
+                  <div key={`${entry.name}-${i}`} className="flex items-center justify-between group">
+                    <div className="flex items-center gap-3">
+                      <div className={cn(
+                        "w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold",
+                        i === 0 ? "bg-yellow-500 text-black" :
+                          i === 1 ? "bg-slate-300 text-black" :
+                            i === 2 ? "bg-amber-600 text-white" : "bg-white/10 text-white/60"
+                      )}>
+                        {i + 1}
+                      </div>
+                      <div>
+                        <div className="text-sm font-bold">{entry.name}</div>
+                        <div className="text-[10px] text-white/40 uppercase tracking-widest font-bold">
+                          Room: {entry.roomId}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1.5 bg-emerald-500/10 px-2 py-1 rounded-lg">
+                      <Flame className="w-3 h-3 text-emerald-500" />
+                      <span className="text-sm font-bold text-emerald-500">{entry.streak}</span>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div className="text-center py-8 text-white/20">
+                  <Medal className="w-8 h-8 mx-auto mb-2 opacity-20" />
+                  <p className="text-xs font-bold uppercase tracking-widest">No streaks yet</p>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </main>
