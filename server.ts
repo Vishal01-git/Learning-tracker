@@ -2,7 +2,7 @@ import express from "express";
 import { createServer as createViteServer } from "vite";
 import { WebSocketServer, WebSocket } from "ws";
 import { createServer } from "http";
-import Database from "better-sqlite3";
+import { Pool } from "pg";
 import path from "path";
 import "dotenv/config";
 import { fileURLToPath } from 'url';
@@ -10,70 +10,62 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const db = new Database(process.env.DATABASE_PATH || "database.sqlite");
-db.pragma('foreign_keys = ON');
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: {
+    rejectUnauthorized: false // Required for Supabase/Render
+  }
+});
 
 // Initialize Database
-db.exec(`
-  CREATE TABLE IF NOT EXISTS rooms (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL
-  );
+const initDb = async () => {
+  const client = await pool.connect();
+  try {
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS rooms (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL
+      );
 
-  CREATE TABLE IF NOT EXISTS users (
-    id TEXT PRIMARY KEY,
-    username TEXT UNIQUE NOT NULL,
-    name TEXT NOT NULL,
-    room_id TEXT,
-    FOREIGN KEY(room_id) REFERENCES rooms(id)
-  );
+      CREATE TABLE IF NOT EXISTS users (
+        id TEXT PRIMARY KEY,
+        username TEXT UNIQUE NOT NULL,
+        name TEXT NOT NULL,
+        room_id TEXT REFERENCES rooms(id) ON DELETE SET NULL
+      );
 
-  CREATE TABLE IF NOT EXISTS tasks (
-    id TEXT PRIMARY KEY,
-    user_id TEXT NOT NULL,
-    title TEXT NOT NULL,
-    type TEXT NOT NULL, -- 'sql', 'pyspark', 'project', 'custom'
-    target_daily INTEGER DEFAULT 1,
-    is_mandatory INTEGER DEFAULT 1,
-    FOREIGN KEY(user_id) REFERENCES users(id)
-  );
+      CREATE TABLE IF NOT EXISTS tasks (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        title TEXT NOT NULL,
+        type TEXT NOT NULL,
+        target_daily INTEGER DEFAULT 1,
+        is_mandatory INTEGER DEFAULT 1
+      );
 
-  CREATE TABLE IF NOT EXISTS logs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id TEXT NOT NULL,
-    task_id TEXT NOT NULL,
-    date TEXT NOT NULL, -- YYYY-MM-DD
-    value INTEGER DEFAULT 0,
-    details TEXT,
-    FOREIGN KEY(user_id) REFERENCES users(id),
-    FOREIGN KEY(task_id) REFERENCES tasks(id)
-  );
-`);
-
-try {
-  db.exec("ALTER TABLE users ADD COLUMN username TEXT");
-  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username)");
-} catch (e) {
-  // Column already exists
-}
-
-try {
-  db.exec("ALTER TABLE logs ADD COLUMN details TEXT");
-} catch (e) {
-  // Column already exists or other error
-}
-
-try {
-  db.exec("ALTER TABLE tasks ADD COLUMN is_mandatory INTEGER DEFAULT 1");
-} catch (e) {
-  // Column already exists or other error
-}
+      CREATE TABLE IF NOT EXISTS logs (
+        id SERIAL PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        date TEXT NOT NULL,
+        value INTEGER DEFAULT 0,
+        details TEXT
+      );
+    `);
+    console.log("Database initialized successfully with fresh CASCADE rules");
+  } catch (err) {
+    console.error("Database initialization error:", err);
+  } finally {
+    client.release();
+  }
+};
 
 async function startServer() {
+  await initDb();
   const app = express();
   const server = createServer(app);
   const wss = new WebSocketServer({ server });
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT) || 3000;
 
   app.use(express.json());
 
@@ -82,22 +74,28 @@ async function startServer() {
   });
 
   // API Routes
-  app.get("/api/state/:roomId", (req, res) => {
+  app.get("/api/state/:roomId", async (req, res) => {
     const { roomId } = req.params;
-    const users = db.prepare("SELECT * FROM users WHERE room_id = ?").all(roomId);
-    const userIds = users.map((u: any) => u.id);
+    try {
+      const usersRes = await pool.query("SELECT * FROM users WHERE room_id = $1", [roomId]);
+      const users = usersRes.rows;
+      const userIds = users.map((u: any) => u.id);
 
-    if (userIds.length === 0) {
-      return res.json({ users: [], tasks: [], logs: [] });
+      if (userIds.length === 0) {
+        return res.json({ users: [], tasks: [], logs: [] });
+      }
+
+      const tasksRes = await pool.query(`SELECT * FROM tasks WHERE user_id = ANY($1)`, [userIds]);
+      const logsRes = await pool.query(`SELECT * FROM logs WHERE user_id = ANY($1)`, [userIds]);
+
+      res.json({ users, tasks: tasksRes.rows, logs: logsRes.rows });
+    } catch (err) {
+      console.error("Error fetching state:", err);
+      res.status(500).send("Internal Server Error");
     }
-
-    const tasks = db.prepare(`SELECT * FROM tasks WHERE user_id IN (${userIds.map(() => '?').join(',')})`).all(...userIds);
-    const logs = db.prepare(`SELECT * FROM logs WHERE user_id IN (${userIds.map(() => '?').join(',')})`).all(...userIds);
-
-    res.json({ users, tasks, logs });
   });
 
-  app.post("/api/init-user", (req, res) => {
+  app.post("/api/init-user", async (req, res) => {
     const { name, roomId, username } = req.body;
     if (!username || !name) {
       return res.status(400).json({ error: "Name and Username are required" });
@@ -105,18 +103,18 @@ async function startServer() {
 
     const cleanUsername = username.toLowerCase().trim().replace(/^@/, '');
 
-    // Ensure room exists
-    db.prepare("INSERT OR IGNORE INTO rooms (id, name) VALUES (?, ?)").run(roomId, `Room ${roomId}`);
+    try {
+      // Ensure room exists
+      await pool.query("INSERT INTO rooms (id, name) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING", [roomId, `Room ${roomId}`]);
 
-    // Check if username exists GLOBALLY
-    let user = db.prepare("SELECT * FROM users WHERE username = ?").get(cleanUsername) as any;
+      // Check if username exists GLOBALLY
+      const userRes = await pool.query("SELECT * FROM users WHERE username = $1", [cleanUsername]);
+      let user = userRes.rows[0];
 
-    if (!user) {
-      // Register New User
-      const userId = `user_${Math.random().toString(36).substr(2, 9)}`;
-      try {
-        db.prepare("INSERT INTO users (id, name, username, room_id) VALUES (?, ?, ?, ?)").run(userId, name, cleanUsername, roomId);
-        user = { id: userId, name, username: cleanUsername, room_id: roomId };
+      if (!user) {
+        // Register New User
+        const userId = `user_${Math.random().toString(36).substr(2, 9)}`;
+        await pool.query("INSERT INTO users (id, name, username, room_id) VALUES ($1, $2, $3, $4)", [userId, name, cleanUsername, roomId]);
 
         // Default tasks for new user
         const defaultTasks = [
@@ -124,28 +122,31 @@ async function startServer() {
           { id: `${userId}_pyspark`, title: "PySpark Learning", type: "pyspark", target: 1, is_mandatory: 1 },
           { id: `${userId}_project`, title: "DE Project Work", type: "project", target: 1, is_mandatory: 1 }
         ];
-        const insertTask = db.prepare("INSERT INTO tasks (id, user_id, title, type, target_daily, is_mandatory) VALUES (?, ?, ?, ?, ?, ?)");
-        defaultTasks.forEach(t => insertTask.run(t.id, userId, t.title, t.type, t.target, t.is_mandatory));
 
-        return res.json({ success: true, userId: user.id });
-      } catch (err) {
-        return res.status(500).json({ error: "Failed to create user. Handle might be taken." });
-      }
-    } else {
-      // Login Existing User
-      // Full proof check: Does the provided name match the owner of this username?
-      if (user.name.toLowerCase() !== name.toLowerCase()) {
-        return res.status(401).json({
-          error: `The handle '@${cleanUsername}' is already taken. Please choose a different username.`
-        });
-      }
+        for (const t of defaultTasks) {
+          await pool.query("INSERT INTO tasks (id, user_id, title, type, target_daily, is_mandatory) VALUES ($1, $2, $3, $4, $5, $6)",
+            [t.id, userId, t.title, t.type, t.target, t.is_mandatory]);
+        }
 
-      // Update room_id if they are joining a different room
-      if (user.room_id !== roomId) {
-        db.prepare("UPDATE users SET room_id = ? WHERE id = ?").run(roomId, user.id);
-      }
+        return res.json({ success: true, userId: userId });
+      } else {
+        // Login Existing User
+        if (user.name.toLowerCase() !== name.toLowerCase()) {
+          return res.status(401).json({
+            error: `The handle '@${cleanUsername}' is already taken. Please choose a different username.`
+          });
+        }
 
-      res.json({ success: true, userId: user.id });
+        // Update room_id if they are joining a different room
+        if (user.room_id !== roomId) {
+          await pool.query("UPDATE users SET room_id = $1 WHERE id = $2", [roomId, user.id]);
+        }
+
+        res.json({ success: true, userId: user.id });
+      }
+    } catch (err) {
+      console.error("Init User Error:", err);
+      res.status(500).json({ error: "Failed to initialize user" });
     }
   });
 
@@ -153,7 +154,7 @@ async function startServer() {
   const clients = new Map<WebSocket, { roomId: string; userId: string }>();
 
   wss.on("connection", (ws) => {
-    ws.on("message", (data) => {
+    ws.on("message", async (data) => {
       const message = JSON.parse(data.toString());
 
       if (message.type === "join") {
@@ -163,86 +164,103 @@ async function startServer() {
       if (message.type === "update_log") {
         const { userId, taskId, date, value, details } = message.payload;
 
-        // Update DB
-        const existing = db.prepare("SELECT id FROM logs WHERE user_id = ? AND task_id = ? AND date = ?").get(userId, taskId, date) as any;
-        if (existing) {
-          db.prepare("UPDATE logs SET value = ?, details = ? WHERE id = ?").run(value, details || null, existing.id);
-        } else {
-          db.prepare("INSERT INTO logs (user_id, task_id, date, value, details) VALUES (?, ?, ?, ?, ?)").run(userId, taskId, date, value, details || null);
-        }
+        try {
+          // Update DB
+          const existingRes = await pool.query("SELECT id FROM logs WHERE user_id = $1 AND task_id = $2 AND date = $3", [userId, taskId, date]);
+          const existing = existingRes.rows[0];
 
-        // Broadcast to room
-        const clientInfo = clients.get(ws);
-        if (clientInfo) {
-          wss.clients.forEach((client) => {
-            const info = clients.get(client);
-            if (client.readyState === WebSocket.OPEN && info?.roomId === clientInfo.roomId) {
-              client.send(JSON.stringify({
-                type: "log_updated",
-                payload: message.payload
-              }));
-            }
-          });
+          if (existing) {
+            await pool.query("UPDATE logs SET value = $1, details = $2 WHERE id = $3", [value, details || null, existing.id]);
+          } else {
+            await pool.query("INSERT INTO logs (user_id, task_id, date, value, details) VALUES ($1, $2, $3, $4, $5)", [userId, taskId, date, value, details || null]);
+          }
+
+          // Broadcast to room
+          const clientInfo = clients.get(ws);
+          if (clientInfo) {
+            wss.clients.forEach((client) => {
+              const info = clients.get(client);
+              if (client.readyState === WebSocket.OPEN && info?.roomId === clientInfo.roomId) {
+                client.send(JSON.stringify({
+                  type: "log_updated",
+                  payload: message.payload
+                }));
+              }
+            });
+          }
+        } catch (err) {
+          console.error("Update Log Error:", err);
         }
       }
 
       if (message.type === "toggle_mandatory") {
         const { taskId, isMandatory } = message.payload;
-        db.prepare("UPDATE tasks SET is_mandatory = ? WHERE id = ?").run(isMandatory ? 1 : 0, taskId);
+        try {
+          await pool.query("UPDATE tasks SET is_mandatory = $1 WHERE id = $2", [isMandatory ? 1 : 0, taskId]);
 
-        const clientInfo = clients.get(ws);
-        if (clientInfo) {
-          wss.clients.forEach((client) => {
-            const info = clients.get(client);
-            if (client.readyState === WebSocket.OPEN && info?.roomId === clientInfo.roomId) {
-              client.send(JSON.stringify({
-                type: "mandatory_toggled",
-                payload: { taskId, isMandatory }
-              }));
-            }
-          });
+          const clientInfo = clients.get(ws);
+          if (clientInfo) {
+            wss.clients.forEach((client) => {
+              const info = clients.get(client);
+              if (client.readyState === WebSocket.OPEN && info?.roomId === clientInfo.roomId) {
+                client.send(JSON.stringify({
+                  type: "mandatory_toggled",
+                  payload: { taskId, isMandatory }
+                }));
+              }
+            });
+          }
+        } catch (err) {
+          console.error("Toggle Mandatory Error:", err);
         }
       }
 
       if (message.type === "add_task") {
         const { userId, title, type, targetDaily } = message.payload;
         const taskId = `${userId}_${Date.now()}`;
-        db.prepare("INSERT INTO tasks (id, user_id, title, type, target_daily, is_mandatory) VALUES (?, ?, ?, ?, ?, 1)").run(taskId, userId, title, type, targetDaily);
+        try {
+          await pool.query("INSERT INTO tasks (id, user_id, title, type, target_daily, is_mandatory) VALUES ($1, $2, $3, $4, $5, 1)",
+            [taskId, userId, title, type, targetDaily]);
 
-        const clientInfo = clients.get(ws);
-        if (clientInfo) {
-          wss.clients.forEach((client) => {
-            const info = clients.get(client);
-            if (client.readyState === WebSocket.OPEN && info?.roomId === clientInfo.roomId) {
-              client.send(JSON.stringify({
-                type: "task_added",
-                payload: { ...message.payload, id: taskId }
-              }));
-            }
-          });
+          const clientInfo = clients.get(ws);
+          if (clientInfo) {
+            wss.clients.forEach((client) => {
+              const info = clients.get(client);
+              if (client.readyState === WebSocket.OPEN && info?.roomId === clientInfo.roomId) {
+                client.send(JSON.stringify({
+                  type: "task_added",
+                  payload: { ...message.payload, id: taskId }
+                }));
+              }
+            });
+          }
+        } catch (err) {
+          console.error("Add Task Error:", err);
         }
       }
 
       if (message.type === "delete_task") {
         const { taskId } = message.payload;
-        console.log(`WebSocket: Deleting task ${taskId}`);
-        db.prepare("DELETE FROM logs WHERE task_id = ?").run(taskId);
-        db.prepare("DELETE FROM tasks WHERE id = ?").run(taskId);
+        console.log(`WebSocket: Attempting to delete task ${taskId}`);
+        try {
+          // With CASCADE, we only need to delete the task itself
+          const res = await pool.query("DELETE FROM tasks WHERE id = $1", [taskId]);
+          console.log(`Task ${taskId} deletion result: ${res.rowCount} rows affected`);
 
-        const clientInfo = clients.get(ws);
-        if (clientInfo) {
-          console.log(`Broadcasting task_deleted ${taskId} to room ${clientInfo.roomId}`);
-          wss.clients.forEach((client) => {
-            const info = clients.get(client);
-            if (client.readyState === WebSocket.OPEN && info?.roomId === clientInfo.roomId) {
-              client.send(JSON.stringify({
-                type: "task_deleted",
-                payload: { taskId }
-              }));
-            }
-          });
-        } else {
-          console.error("No clientInfo found for socket attempting to delete task");
+          const clientInfo = clients.get(ws);
+          if (clientInfo) {
+            wss.clients.forEach((client) => {
+              const info = clients.get(client);
+              if (client.readyState === WebSocket.OPEN && info?.roomId === clientInfo.roomId) {
+                client.send(JSON.stringify({
+                  type: "task_deleted",
+                  payload: { taskId }
+                }));
+              }
+            });
+          }
+        } catch (err) {
+          console.error(`Delete Task Error (${taskId}):`, err);
         }
       }
     });
@@ -253,11 +271,15 @@ async function startServer() {
   });
 
   // Leaderboard Logic
-  app.get("/api/leaderboard", (req, res) => {
+  app.get("/api/leaderboard", async (req, res) => {
     try {
-      const allUsers = db.prepare("SELECT id, name, room_id FROM users").all() as any[];
-      const allTasks = db.prepare("SELECT id, user_id, target_daily FROM tasks WHERE is_mandatory = 1").all() as any[];
-      const allLogs = db.prepare("SELECT user_id, task_id, date, value FROM logs").all() as any[];
+      const allUsersRes = await pool.query("SELECT id, name, username, room_id FROM users");
+      const allTasksRes = await pool.query("SELECT id, user_id, target_daily FROM tasks WHERE is_mandatory = 1");
+      const allLogsRes = await pool.query("SELECT user_id, task_id, date, value FROM logs");
+
+      const allUsers = allUsersRes.rows;
+      const allTasks = allTasksRes.rows;
+      const allLogs = allLogsRes.rows;
 
       const leaderboard = allUsers.map(u => {
         const userTasks = allTasks.filter(t => t.user_id === u.id);
@@ -265,7 +287,7 @@ async function startServer() {
 
         if (userTasks.length === 0) return { ...u, streak: 0 };
 
-        const datesWithLogs = [...new Set(userLogs.map(l => l.date))].sort().reverse();
+        const datesWithLogs = [...new Set(userLogs.map(l => l.date))].sort().reverse() as string[];
         const completedDates: string[] = [];
 
         for (const date of datesWithLogs) {
@@ -299,7 +321,7 @@ async function startServer() {
       });
 
       const sortedLeaderboard = leaderboard
-        .filter(u => u.streak > 0)
+        .filter((u: any) => u.streak > 0)
         .sort((a, b) => b.streak - a.streak)
         .slice(0, 5);
 
@@ -313,30 +335,24 @@ async function startServer() {
   // Admin Routes
   app.post("/api/admin/login", (req, res) => {
     const { username, password } = req.body;
-    console.log(`Admin login attempt for username: ${username}`);
     if (username === "admin" && password === (process.env.ADMIN_PASSWORD || "admin123")) {
-      console.log("Admin login successful");
       res.json({ success: true, token: "admin-token-xyz" });
     } else {
-      console.log("Admin login failed: Invalid credentials");
       res.status(401).json({ error: "Invalid credentials" });
     }
   });
 
-  app.get("/api/admin/data", (req, res) => {
+  app.get("/api/admin/data", async (req, res) => {
     const token = req.headers.authorization;
-    console.log(`Admin data request with token: ${token}`);
     if (token !== "admin-token-xyz") {
-      console.log("Admin data request failed: Unauthorized");
       return res.status(403).send("Unauthorized");
     }
 
     try {
-      const users = db.prepare("SELECT * FROM users").all();
-      const tasks = db.prepare("SELECT * FROM tasks").all();
-      const logs = db.prepare("SELECT * FROM logs").all();
-      const rooms = db.prepare("SELECT * FROM rooms").all();
-      console.log(`Admin data fetched: ${users.length} users, ${tasks.length} tasks, ${logs.length} logs`);
+      const users = (await pool.query("SELECT * FROM users")).rows;
+      const tasks = (await pool.query("SELECT * FROM tasks")).rows;
+      const logs = (await pool.query("SELECT * FROM logs")).rows;
+      const rooms = (await pool.query("SELECT * FROM rooms")).rows;
       res.json({ users, tasks, logs, rooms });
     } catch (err) {
       console.error("Error fetching admin data:", err);
@@ -344,44 +360,50 @@ async function startServer() {
     }
   });
 
-  app.delete("/api/admin/user/:id", (req, res) => {
+  app.delete("/api/admin/user/:id", async (req, res) => {
     const token = req.headers.authorization;
     if (token !== "admin-token-xyz") return res.status(403).send("Unauthorized");
 
     const { id } = req.params;
-    console.log(`Deleting user ${id}`);
-
+    console.log(`Admin: Attempting to delete user ${id}`);
     try {
-      const deleteTransaction = db.transaction(() => {
-        db.prepare("DELETE FROM logs WHERE user_id = ?").run(id);
-        db.prepare("DELETE FROM tasks WHERE user_id = ?").run(id);
-        db.prepare("DELETE FROM users WHERE id = ?").run(id);
-      });
-
-      deleteTransaction();
-      console.log(`User ${id} deleted successfully`);
+      // With CASCADE, deleting user deletes everything else
+      const result = await pool.query("DELETE FROM users WHERE id = $1", [id]);
+      console.log(`User ${id} deletion result: ${result.rowCount} rows affected`);
       res.json({ success: true });
     } catch (err) {
       console.error(`Error deleting user ${id}:`, err);
-      res.status(500).json({ error: "Failed to delete user" });
+      res.status(500).json({ error: "Failed to delete user", details: err instanceof Error ? err.message : String(err) });
     }
   });
 
-  app.delete("/api/admin/log/:id", (req, res) => {
+  app.delete("/api/admin/log/:id", async (req, res) => {
     const token = req.headers.authorization;
     if (token !== "admin-token-xyz") return res.status(403).send("Unauthorized");
 
-    db.prepare("DELETE FROM logs WHERE id = ?").run(req.params.id);
-    res.json({ success: true });
+    try {
+      await pool.query("DELETE FROM logs WHERE id = $1", [req.params.id]);
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).send("Error deleting log");
+    }
   });
 
-  app.delete("/api/admin/task/:id", (req, res) => {
+  app.delete("/api/admin/task/:id", async (req, res) => {
     const token = req.headers.authorization;
     if (token !== "admin-token-xyz") return res.status(403).send("Unauthorized");
 
-    db.prepare("DELETE FROM logs WHERE task_id = ?").run(req.params.id);
-    db.prepare("DELETE FROM tasks WHERE id = ?").run(req.params.id);
-    res.json({ success: true });
+    const { id } = req.params;
+    console.log(`Admin: Attempting to delete task ${id}`);
+    try {
+      // With CASCADE, deleting task deletes its logs
+      const result = await pool.query("DELETE FROM tasks WHERE id = $1", [id]);
+      console.log(`Task ${id} deletion result: ${result.rowCount} rows affected`);
+      res.json({ success: true });
+    } catch (err) {
+      console.error(`Error deleting task ${id}:`, err);
+      res.status(500).json({ error: "Failed to delete task", details: err instanceof Error ? err.message : String(err) });
+    }
   });
 
   // Vite middleware

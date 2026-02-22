@@ -1,5 +1,13 @@
-# SQLite database file
+# Database & Environment
 database.sqlite
+.env
+.env.local
+
+# Build & Dependencies
 node_modules
 dist
-.env
+.tmp
+
+# OS files
+.DS_Store
+Thumbs.db
