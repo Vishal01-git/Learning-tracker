@@ -34,6 +34,7 @@ db.exec(`
     title TEXT NOT NULL,
     type TEXT NOT NULL, -- 'sql', 'pyspark', 'project', 'custom'
     target_daily INTEGER DEFAULT 1,
+    is_mandatory INTEGER DEFAULT 1,
     FOREIGN KEY(user_id) REFERENCES users(id)
   );
 
@@ -51,6 +52,12 @@ db.exec(`
 
 try {
   db.exec("ALTER TABLE logs ADD COLUMN details TEXT");
+} catch (e) {
+  // Column already exists or other error
+}
+
+try {
+  db.exec("ALTER TABLE tasks ADD COLUMN is_mandatory INTEGER DEFAULT 1");
 } catch (e) {
   // Column already exists or other error
 }
@@ -99,12 +106,12 @@ async function startServer() {
 
       // Default tasks for new user
       const defaultTasks = [
-        { id: `${userId}_sql`, title: "SQL Practice (2 questions)", type: "sql", target: 2 },
-        { id: `${userId}_pyspark`, title: "PySpark Learning", type: "pyspark", target: 1 },
-        { id: `${userId}_project`, title: "DE Project Work", type: "project", target: 1 }
+        { id: `${userId}_sql`, title: "SQL Practice (2 questions)", type: "sql", target: 2, is_mandatory: 1 },
+        { id: `${userId}_pyspark`, title: "PySpark Learning", type: "pyspark", target: 1, is_mandatory: 1 },
+        { id: `${userId}_project`, title: "DE Project Work", type: "project", target: 1, is_mandatory: 1 }
       ];
-      const insertTask = db.prepare("INSERT INTO tasks (id, user_id, title, type, target_daily) VALUES (?, ?, ?, ?, ?)");
-      defaultTasks.forEach(t => insertTask.run(t.id, userId, t.title, t.type, t.target));
+      const insertTask = db.prepare("INSERT INTO tasks (id, user_id, title, type, target_daily, is_mandatory) VALUES (?, ?, ?, ?, ?, ?)");
+      defaultTasks.forEach(t => insertTask.run(t.id, userId, t.title, t.type, t.target, t.is_mandatory));
     }
 
     res.json({ success: true, userId: user.id });
@@ -147,10 +154,28 @@ async function startServer() {
         }
       }
 
+      if (message.type === "toggle_mandatory") {
+        const { taskId, isMandatory } = message.payload;
+        db.prepare("UPDATE tasks SET is_mandatory = ? WHERE id = ?").run(isMandatory ? 1 : 0, taskId);
+
+        const clientInfo = clients.get(ws);
+        if (clientInfo) {
+          wss.clients.forEach((client) => {
+            const info = clients.get(client);
+            if (client.readyState === WebSocket.OPEN && info?.roomId === clientInfo.roomId) {
+              client.send(JSON.stringify({
+                type: "mandatory_toggled",
+                payload: { taskId, isMandatory }
+              }));
+            }
+          });
+        }
+      }
+
       if (message.type === "add_task") {
         const { userId, title, type, targetDaily } = message.payload;
         const taskId = `${userId}_${Date.now()}`;
-        db.prepare("INSERT INTO tasks (id, user_id, title, type, target_daily) VALUES (?, ?, ?, ?, ?)").run(taskId, userId, title, type, targetDaily);
+        db.prepare("INSERT INTO tasks (id, user_id, title, type, target_daily, is_mandatory) VALUES (?, ?, ?, ?, ?, 1)").run(taskId, userId, title, type, targetDaily);
 
         const clientInfo = clients.get(ws);
         if (clientInfo) {
@@ -203,10 +228,10 @@ async function startServer() {
     if (!model) {
       return res.json({
         tips: [
-          "Set specific, measurable goals for today",
-          "Try the Pomodoro technique for deep focus",
-          "Summarize what you learned in your own words",
-          "Connect new concepts to things you already know"
+          "Focus on Window Functions in SQL",
+          "Understand PySpark RDD vs Dataframes",
+          "Document your project architecture",
+          "Practice LeetCode Hard SQL weekly"
         ]
       });
     }

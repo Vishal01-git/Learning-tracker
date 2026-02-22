@@ -22,13 +22,15 @@ import {
   X,
   ExternalLink,
   Info,
-  Trash2
+  Trash2,
+  Edit2
 } from 'lucide-react';
 import { cn, User, Task, Log, AppState } from './types';
 import confetti from 'canvas-confetti';
 import { motion, AnimatePresence } from 'framer-motion';
 
-const DAYS_TO_SHOW = 14;
+// Responsive constants
+const GET_DAYS_TO_SHOW = () => window.innerWidth < 768 ? 7 : 14;
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
@@ -39,6 +41,7 @@ export default function App() {
   const [inputRoomId, setInputRoomId] = useState('default');
   const socketRef = useRef<WebSocket | null>(null);
   const [canvasSize, setCanvasSize] = useState({ width: 800, height: 400 });
+  const [daysToShow, setDaysToShow] = useState(GET_DAYS_TO_SHOW());
   const containerRef = useRef<HTMLDivElement>(null);
 
   // Selected Date for logging/viewing
@@ -47,6 +50,7 @@ export default function App() {
   // Modals State
   const [activeLogTask, setActiveLogTask] = useState<{ task: Task; date: string } | null>(null);
   const [logDetails, setLogDetails] = useState('');
+  const [logValue, setLogValue] = useState<number>(1);
   const [isAddTaskModalOpen, setIsAddTaskModalOpen] = useState(false);
   const [newTaskTitle, setNewTaskTitle] = useState('');
   const [newTaskTarget, setNewTaskTarget] = useState('1');
@@ -71,6 +75,12 @@ export default function App() {
       localStorage.removeItem('de_catalyst_user');
       localStorage.removeItem('de_catalyst_room_id');
     }
+    return () => {
+      if (socketRef.current) {
+        socketRef.current.close();
+        socketRef.current = null;
+      }
+    };
   }, []);
 
   // Admin State
@@ -106,6 +116,7 @@ export default function App() {
           width: containerRef.current.offsetWidth,
           height: 400
         });
+        setDaysToShow(GET_DAYS_TO_SHOW());
       }
     };
     updateSize();
@@ -193,15 +204,27 @@ export default function App() {
         });
       }
       if (message.type === 'task_added') {
+        setState(prev => {
+          if (prev.tasks.some(t => t.id === message.payload.id)) return prev;
+          return {
+            ...prev,
+            tasks: [...prev.tasks, {
+              id: message.payload.id,
+              user_id: message.payload.userId,
+              title: message.payload.title,
+              type: message.payload.type,
+              target_daily: message.payload.targetDaily,
+              is_mandatory: true
+            }]
+          };
+        });
+      }
+      if (message.type === 'mandatory_toggled') {
         setState(prev => ({
           ...prev,
-          tasks: [...prev.tasks, {
-            id: message.payload.id,
-            user_id: message.payload.userId,
-            title: message.payload.title,
-            type: message.payload.type,
-            target_daily: message.payload.targetDaily
-          }]
+          tasks: prev.tasks.map(t =>
+            t.id === message.payload.taskId ? { ...t, is_mandatory: message.payload.isMandatory } : t
+          )
         }));
       }
       if (message.type === 'task_deleted') {
@@ -271,31 +294,56 @@ export default function App() {
     }
   };
 
+  const toggleMandatory = (taskId: string, isMandatory: boolean) => {
+    if (socketRef.current) {
+      socketRef.current.send(JSON.stringify({
+        type: 'toggle_mandatory',
+        payload: { taskId, isMandatory }
+      }));
+      // Local update
+      setState(prev => ({
+        ...prev,
+        tasks: prev.tasks.map(t => t.id === taskId ? { ...t, is_mandatory: isMandatory } : t)
+      }));
+    }
+  };
+
   const today = new Date().toISOString().split('T')[0];
-  const last14Days = useMemo(() => {
+  const lastDays = useMemo(() => {
     const days = [];
-    for (let i = DAYS_TO_SHOW - 1; i >= 0; i--) {
+    for (let i = daysToShow - 1; i >= 0; i--) {
       const d = new Date();
       d.setDate(d.getDate() - i);
       days.push(d.toISOString().split('T')[0]);
     }
     return days;
-  }, []);
+  }, [daysToShow]);
 
   const userTasks = state.tasks.filter(t => t.user_id === user?.id);
 
   const getStreak = (userId: string) => {
     const userTasks = state.tasks.filter(t => t.user_id === userId);
-    const sqlTask = userTasks.find(t => t.type === 'sql');
-    if (!sqlTask) return 0;
+    const mandatoryTasks = userTasks.filter(t => t.is_mandatory);
 
-    const sqlLogs = state.logs.filter(l =>
-      l.user_id === userId &&
-      l.task_id === sqlTask.id &&
-      l.value >= sqlTask.target_daily
-    );
+    if (mandatoryTasks.length === 0) return 0;
 
-    const completedDates = [...new Set(sqlLogs.map(l => l.date))].sort().reverse();
+    // Get all dates where ALL mandatory tasks were completed
+    const datesWithLogs = state.logs
+      .filter(l => l.user_id === userId)
+      .map(l => l.date);
+
+    const uniqueDates = [...new Set(datesWithLogs)].sort().reverse();
+    const completedDates: string[] = [];
+
+    for (const date of uniqueDates) {
+      const isDayComplete = mandatoryTasks.every(task => {
+        const log = state.logs.find(l => l.user_id === userId && l.task_id === task.id && l.date === date);
+        return (log?.value || 0) >= task.target_daily;
+      });
+      if (isDayComplete) {
+        completedDates.push(date);
+      }
+    }
 
     let streak = 0;
     let current = new Date();
@@ -314,11 +362,10 @@ export default function App() {
 
   const handleLogSubmit = () => {
     if (activeLogTask) {
-      const log = state.logs.find(l => l.user_id === user?.id && l.task_id === activeLogTask.task.id && l.date === activeLogTask.date);
-      const currentValue = log?.value || 0;
-      updateLog(activeLogTask.task.id, activeLogTask.date, currentValue + 1, logDetails);
+      updateLog(activeLogTask.task.id, activeLogTask.date, logValue, logDetails);
       setActiveLogTask(null);
       setLogDetails('');
+      setLogValue(1);
     }
   };
 
@@ -419,21 +466,21 @@ export default function App() {
           <motion.div
             initial={{ opacity: 0, y: -20 }}
             animate={{ opacity: 1, y: 0 }}
-            className="flex items-center justify-between mb-12"
+            className="flex flex-col sm:flex-row sm:items-center justify-between mb-8 md:mb-12 gap-4"
           >
             <div className="flex items-center gap-4">
-              <div className="p-3 bg-white rounded-xl">
-                <Settings2 className="text-black w-6 h-6" />
+              <div className="p-2 sm:p-3 bg-white rounded-xl">
+                <Settings2 className="text-black w-5 h-5 sm:w-6 sm:h-6" />
               </div>
-              <h1 className="text-3xl font-bold tracking-tight">Admin Control Center</h1>
+              <h1 className="text-xl sm:text-3xl font-bold tracking-tight">Admin Dashboard</h1>
             </div>
             <motion.button
               whileHover={{ scale: 1.05 }}
               whileTap={{ scale: 0.95 }}
               onClick={() => { setAdminToken(null); setIsAdminMode(false); setAdminData(null); }}
-              className="px-6 py-3 bg-[#ffffff1a] rounded-xl hover:bg-[#ffffff33] font-bold transition-colors flex items-center gap-2"
+              className="px-4 py-2 sm:px-6 sm:py-3 bg-[#ffffff1a] rounded-xl hover:bg-[#ffffff33] text-sm sm:text-base font-bold transition-colors flex items-center justify-center gap-2"
             >
-              <LogOut className="w-4 h-4" /> Exit Dashboard
+              <LogOut className="w-4 h-4" /> Exit
             </motion.button>
           </motion.div>
 
@@ -478,11 +525,11 @@ export default function App() {
                       className="p-4 bg-[#ffffff0d] rounded-xl border border-[#ffffff0d] flex items-center justify-between group"
                     >
                       <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-3 mb-1">
-                          <span className="text-[10px] font-bold bg-[#ffffff1a] px-2 py-0.5 rounded uppercase tracking-widest">{l.date}</span>
-                          <span className="text-xs font-bold text-[#ffffff99]">Task: {l.task_id}</span>
+                        <div className="flex flex-wrap items-center gap-2 mb-1">
+                          <span className="text-[9px] font-bold bg-[#ffffff1a] px-2 py-0.5 rounded uppercase tracking-widest">{l.date}</span>
+                          <span className="text-[10px] font-bold text-[#ffffff99]">ID: {l.task_id}</span>
                         </div>
-                        <div className="text-sm text-[#ffffffcc] truncate">{l.details || "No details provided"}</div>
+                        <div className="text-xs text-[#ffffffcc] truncate">{l.details || "No details provided"}</div>
                       </div>
                       <button
                         onClick={(e) => { e.stopPropagation(); deleteLog(l.id); }}
@@ -615,13 +662,13 @@ export default function App() {
   return (
     <div className="min-h-screen bg-[#0A0A0A] text-white font-sans transition-colors duration-300">
       {/* Header */}
-      <header className="bg-[#1A1A1A] border-b border-white/10 px-6 py-4 flex items-center justify-between sticky top-0 z-50">
+      <header className="bg-[#1A1A1A] border-b border-white/10 px-4 sm:px-6 py-3 sm:py-4 flex items-center justify-between sticky top-0 z-50">
         <div className="flex items-center gap-8">
           <div className="flex items-center gap-2">
-            <div className="p-2 bg-white rounded-lg">
-              <Database className="text-black w-5 h-5" />
+            <div className="p-1.5 sm:p-2 bg-white rounded-lg">
+              <Database className="text-black w-4 h-4 sm:w-5 sm:h-5" />
             </div>
-            <span className="font-bold text-lg tracking-tight">Learning Tracker</span>
+            <span className="font-bold text-base sm:text-lg tracking-tight">Learning Tracker</span>
           </div>
 
           <nav className="hidden md:flex items-center gap-6">
@@ -634,6 +681,17 @@ export default function App() {
               {getStreak(user?.id || '')} Day Streak
             </div>
           </nav>
+
+          {/* Mobile Info */}
+          <div className="flex md:hidden items-center gap-3">
+            <div className="flex items-center gap-1 text-[10px] font-bold text-emerald-400 bg-emerald-400/10 px-2 py-1 rounded-full">
+              <Flame className="w-3 h-3" />
+              {getStreak(user?.id || '')}
+            </div>
+            <div className="text-[10px] font-bold text-white/40 bg-white/5 px-2 py-1 rounded-full">
+              {roomId}
+            </div>
+          </div>
         </div>
 
         <div className="flex items-center gap-4">
@@ -651,14 +709,14 @@ export default function App() {
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto p-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
+      <main className="max-w-7xl mx-auto p-4 sm:p-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* Left Column: Tasks & Progress */}
         <div className="lg:col-span-8 space-y-6">
           {/* Canvas Visualization */}
           <div className="bg-[#1A1A1A] rounded-2xl border border-white/10 p-6 shadow-sm overflow-hidden" ref={containerRef}>
-            <div className="flex items-center justify-between mb-6">
+            <div className="flex flex-col md:flex-row md:items-center justify-between mb-6 gap-4">
               <h2 className="font-serif italic text-xl">Consistency Matrix</h2>
-              <div className="flex items-center gap-4 text-[10px] uppercase tracking-widest font-bold text-white/40">
+              <div className="flex flex-wrap items-center gap-4 text-[10px] uppercase tracking-widest font-bold text-white/40">
                 <div className="flex items-center gap-1">
                   <div className="w-2 h-2 bg-white/5 rounded-sm"></div> Empty
                 </div>
@@ -683,7 +741,7 @@ export default function App() {
                       opacity={0.5}
                       y={5}
                     />
-                    {last14Days.map((date, dayIdx) => {
+                    {lastDays.map((date, dayIdx) => {
                       const log = state.logs.find(l => l.user_id === user?.id && l.task_id === task.id && l.date === date);
                       const value = log?.value || 0;
                       const isComplete = value >= task.target_daily;
@@ -692,9 +750,9 @@ export default function App() {
                       return (
                         <Rect
                           key={date}
-                          x={dayIdx * ((canvasSize.width - 100) / DAYS_TO_SHOW)}
+                          x={dayIdx * ((canvasSize.width - 80) / daysToShow)}
                           y={25}
-                          width={(canvasSize.width - 150) / DAYS_TO_SHOW}
+                          width={(canvasSize.width - 120) / daysToShow}
                           height={24}
                           fill={isComplete ? '#10b981' : isPartial ? '#064e3b' : '#2A2A2A'}
                           cornerRadius={4}
@@ -712,18 +770,18 @@ export default function App() {
 
           {/* Date Selector & Checklist */}
           <div className="space-y-4">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
               <h2 className="text-xl font-bold flex items-center gap-3">
                 <ChevronRight className="w-5 h-5 text-emerald-400" />
-                Tasks for {selectedDate === today ? "Today" : selectedDate}
+                <span className="truncate">Tasks for {selectedDate === today ? "Today" : selectedDate}</span>
               </h2>
-              <div className="flex gap-2">
-                {last14Days.slice(-7).map(date => (
+              <div className="flex gap-2 overflow-x-auto pb-2 sm:pb-0 custom-scrollbar no-scrollbar">
+                {lastDays.slice(-7).map(date => (
                   <button
                     key={date}
                     onClick={() => setSelectedDate(date)}
                     className={cn(
-                      "px-3 py-1 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all",
+                      "px-4 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all whitespace-nowrap",
                       selectedDate === date ? "bg-white text-black" : "bg-white/5 text-white/40 hover:bg-white/10"
                     )}
                   >
@@ -749,14 +807,23 @@ export default function App() {
                           {task.type === 'project' && <Briefcase className="w-5 h-5" />}
                           {task.type === 'custom' && <Settings2 className="w-5 h-5" />}
                         </div>
-                        {task.type === 'custom' && (
-                          <button
-                            onClick={() => deleteTask(task.id)}
-                            className="p-3 bg-[#2A2A2A] rounded-xl text-red-400 hover:bg-red-400 hover:text-white transition-all opacity-0 group-hover:opacity-100"
-                          >
-                            <Trash2 className="w-5 h-5" />
-                          </button>
-                        )}
+                        <button
+                          onClick={() => deleteTask(task.id)}
+                          className="p-3 bg-[#2A2A2A] rounded-xl text-red-400 hover:bg-red-400 hover:text-white transition-all opacity-0 group-hover:opacity-100"
+                          title="Delete Task"
+                        >
+                          <Trash2 className="w-5 h-5" />
+                        </button>
+                        <button
+                          onClick={() => toggleMandatory(task.id, !task.is_mandatory)}
+                          className={cn(
+                            "p-3 rounded-xl transition-all opacity-0 group-hover:opacity-100",
+                            task.is_mandatory ? "bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500 hover:text-white" : "bg-[#2A2A2A] text-white/40 hover:bg-white/10 hover:text-white"
+                          )}
+                          title={task.is_mandatory ? "Mandatory for Streak" : "Optional for Streak"}
+                        >
+                          <CheckCircle2 className="w-5 h-5" />
+                        </button>
                       </div>
                       <div className="text-right">
                         <span className="text-2xl font-bold font-mono">{value}</span>
@@ -779,10 +846,15 @@ export default function App() {
                       <motion.button
                         whileHover={{ scale: 1.02, backgroundColor: '#f3f4f6', boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.1)' }}
                         whileTap={{ scale: 0.98 }}
-                        onClick={() => setActiveLogTask({ task, date: selectedDate })}
+                        onClick={() => {
+                          const existingLog = state.logs.find(l => l.user_id === user?.id && l.task_id === task.id && l.date === selectedDate);
+                          setActiveLogTask({ task, date: selectedDate });
+                          setLogDetails(existingLog?.details || '');
+                          setLogValue(existingLog ? existingLog.value : 1);
+                        }}
                         className="flex-[2] py-2 bg-white text-black rounded-lg text-sm font-bold transition-all flex items-center justify-center gap-2"
                       >
-                        <Plus className="w-4 h-4" /> Log Progress
+                        <Plus className="w-4 h-4" /> {log ? 'Update Progress' : 'Log Progress'}
                       </motion.button>
                     </div>
 
@@ -794,9 +866,21 @@ export default function App() {
                     </div>
 
                     {log?.details && (
-                      <div className="mt-4 p-3 bg-[#2A2A2A] rounded-lg text-[10px] text-white/60 font-medium flex items-start gap-2">
-                        <Info className="w-3 h-3 mt-0.5 shrink-0" />
-                        <div className="break-all">{log.details}</div>
+                      <div className="mt-4 p-3 bg-[#2A2A2A] rounded-lg text-[10px] text-white/60 font-medium flex items-start justify-between gap-2 group/details">
+                        <div className="flex items-start gap-2">
+                          <Info className="w-3 h-3 mt-0.5 shrink-0" />
+                          <div className="break-all">{log.details}</div>
+                        </div>
+                        <button
+                          onClick={() => {
+                            setActiveLogTask({ task, date: selectedDate });
+                            setLogDetails(log.details || '');
+                            setLogValue(log.value);
+                          }}
+                          className="opacity-0 group-hover/details:opacity-100 p-1 hover:bg-white/10 rounded transition-all"
+                        >
+                          <Edit2 className="w-3 h-3" />
+                        </button>
                       </div>
                     )}
                   </div>
@@ -947,6 +1031,32 @@ export default function App() {
                 <div>
                   <label className="block text-xs font-semibold uppercase tracking-wider text-black/40 dark:text-white/40 mb-2">Task</label>
                   <div className="font-bold">{activeLogTask.task.title}</div>
+                </div>
+
+                <div className="flex items-center justify-between gap-4">
+                  <div className="flex-1">
+                    <label className="block text-xs font-semibold uppercase tracking-wider text-black/40 dark:text-white/40 mb-2">Total Progress</label>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => setLogValue(prev => Math.max(0, prev - 1))}
+                        className="p-2 bg-[#F5F5F0] dark:bg-[#2A2A2A] rounded-lg hover:bg-black/5 dark:hover:bg-white/5 transition-colors"
+                      >
+                        -
+                      </button>
+                      <input
+                        type="number"
+                        value={logValue}
+                        onChange={(e) => setLogValue(parseInt(e.target.value) || 0)}
+                        className="w-full px-4 py-2 bg-[#F5F5F0] dark:bg-[#2A2A2A] border-none rounded-xl focus:ring-2 focus:ring-black dark:focus:ring-white outline-none transition-all dark:text-white text-center font-bold"
+                      />
+                      <button
+                        onClick={() => setLogValue(prev => prev + 1)}
+                        className="p-2 bg-[#F5F5F0] dark:bg-[#2A2A2A] rounded-lg hover:bg-black/5 dark:hover:bg-white/5 transition-colors"
+                      >
+                        +
+                      </button>
+                    </div>
+                  </div>
                 </div>
 
                 <div>

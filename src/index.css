@@ -72,3 +72,13 @@
 .animate-float {
     animation: float 6s ease-in-out infinite;
 }
+@layer utilities {
+    .no-scrollbar::-webkit-scrollbar {
+        display: none;
+    }
+
+    .no-scrollbar {
+        -ms-overflow-style: none;
+        scrollbar-width: none;
+    }
+}
