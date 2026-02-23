@@ -40,8 +40,10 @@ const initDb = async () => {
         title TEXT NOT NULL,
         type TEXT NOT NULL,
         target_daily INTEGER DEFAULT 1,
-        is_mandatory INTEGER DEFAULT 1
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
+
+      ALTER TABLE tasks ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
 
       CREATE TABLE IF NOT EXISTS logs (
         id SERIAL PRIMARY KEY,
@@ -51,8 +53,10 @@ const initDb = async () => {
         value INTEGER DEFAULT 0,
         details TEXT
       );
+
+      DROP TABLE IF EXISTS task_mandatory_settings;
     `);
-    console.log("Database initialized successfully with fresh CASCADE rules");
+    console.log("Database initialized successfully - Mandatory features removed");
   } catch (err) {
     console.error("Database initialization error:", err);
   } finally {
@@ -88,7 +92,11 @@ async function startServer() {
       const tasksRes = await pool.query(`SELECT * FROM tasks WHERE user_id = ANY($1)`, [userIds]);
       const logsRes = await pool.query(`SELECT * FROM logs WHERE user_id = ANY($1)`, [userIds]);
 
-      res.json({ users, tasks: tasksRes.rows, logs: logsRes.rows });
+      res.json({
+        users,
+        tasks: tasksRes.rows,
+        logs: logsRes.rows
+      });
     } catch (err) {
       console.error("Error fetching state:", err);
       res.status(500).send("Internal Server Error");
@@ -118,14 +126,14 @@ async function startServer() {
 
         // Default tasks for new user
         const defaultTasks = [
-          { id: `${userId}_sql`, title: "SQL Practice (2 questions)", type: "sql", target: 2, is_mandatory: 1 },
-          { id: `${userId}_pyspark`, title: "PySpark Learning", type: "pyspark", target: 1, is_mandatory: 1 },
-          { id: `${userId}_project`, title: "DE Project Work", type: "project", target: 1, is_mandatory: 1 }
+          { id: `${userId}_sql`, title: "SQL Practice (2 questions)", type: "sql", target: 2 },
+          { id: `${userId}_pyspark`, title: "PySpark Learning", type: "pyspark", target: 1 },
+          { id: `${userId}_project`, title: "DE Project Work", type: "project", target: 1 }
         ];
 
         for (const t of defaultTasks) {
-          await pool.query("INSERT INTO tasks (id, user_id, title, type, target_daily, is_mandatory) VALUES ($1, $2, $3, $4, $5, $6)",
-            [t.id, userId, t.title, t.type, t.target, t.is_mandatory]);
+          await pool.query("INSERT INTO tasks (id, user_id, title, type, target_daily) VALUES ($1, $2, $3, $4, $5)",
+            [t.id, userId, t.title, t.type, t.target]);
         }
 
         return res.json({ success: true, userId: userId });
@@ -193,33 +201,11 @@ async function startServer() {
         }
       }
 
-      if (message.type === "toggle_mandatory") {
-        const { taskId, isMandatory } = message.payload;
-        try {
-          await pool.query("UPDATE tasks SET is_mandatory = $1 WHERE id = $2", [isMandatory ? 1 : 0, taskId]);
-
-          const clientInfo = clients.get(ws);
-          if (clientInfo) {
-            wss.clients.forEach((client) => {
-              const info = clients.get(client);
-              if (client.readyState === WebSocket.OPEN && info?.roomId === clientInfo.roomId) {
-                client.send(JSON.stringify({
-                  type: "mandatory_toggled",
-                  payload: { taskId, isMandatory }
-                }));
-              }
-            });
-          }
-        } catch (err) {
-          console.error("Toggle Mandatory Error:", err);
-        }
-      }
-
       if (message.type === "add_task") {
         const { userId, title, type, targetDaily } = message.payload;
         const taskId = `${userId}_${Date.now()}`;
         try {
-          await pool.query("INSERT INTO tasks (id, user_id, title, type, target_daily, is_mandatory) VALUES ($1, $2, $3, $4, $5, 1)",
+          await pool.query("INSERT INTO tasks (id, user_id, title, type, target_daily) VALUES ($1, $2, $3, $4, $5)",
             [taskId, userId, title, type, targetDaily]);
 
           const clientInfo = clients.get(ws);
@@ -274,7 +260,7 @@ async function startServer() {
   app.get("/api/leaderboard", async (req, res) => {
     try {
       const allUsersRes = await pool.query("SELECT id, name, username, room_id FROM users");
-      const allTasksRes = await pool.query("SELECT id, user_id, target_daily FROM tasks WHERE is_mandatory = 1");
+      const allTasksRes = await pool.query("SELECT id, user_id, target_daily FROM tasks");
       const allLogsRes = await pool.query("SELECT user_id, task_id, date, value FROM logs");
 
       const allUsers = allUsersRes.rows;
@@ -288,31 +274,35 @@ async function startServer() {
         if (userTasks.length === 0) return { ...u, streak: 0 };
 
         const datesWithLogs = [...new Set(userLogs.map(l => l.date))].sort().reverse() as string[];
-        const completedDates: string[] = [];
+        const completedDates: { date: string, points: number }[] = [];
 
         for (const date of datesWithLogs) {
-          const isDayComplete = userTasks.every(task => {
+          const dayTasks = userTasks.map(task => {
             const log = userLogs.find(l => l.task_id === task.id && l.date === date);
-            return (log?.value || 0) >= task.target_daily;
+            return { target: task.target_daily, value: log?.value || 0 };
           });
-          if (isDayComplete) {
-            completedDates.push(date);
+
+          const isAnyTaskComplete = dayTasks.some(t => t.value >= t.target);
+          if (isAnyTaskComplete) {
+            const isBonusEarned = dayTasks.some(t => t.value >= t.target * 5);
+            completedDates.push({ date, points: isBonusEarned ? 2 : 1 });
           }
         }
 
         let streak = 0;
-        let current = new Date();
-        current.setHours(23, 59, 59, 999); // End of today
+        const now = new Date();
+        const today = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate(), 12, 0, 0));
+        let current = today;
 
         for (let i = 0; i < completedDates.length; i++) {
-          const logDate = new Date(completedDates[i]);
-          logDate.setHours(12, 0, 0, 0); // Middle of that day
+          const [y, m, d] = completedDates[i].date.split('-').map(Number);
+          const logDate = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
+
           const diff = Math.floor((current.getTime() - logDate.getTime()) / (1000 * 3600 * 24));
 
           if (diff <= 1) {
-            streak++;
+            streak += completedDates[i].points;
             current = logDate;
-            current.setHours(12, 0, 0, 0);
           } else {
             break;
           }

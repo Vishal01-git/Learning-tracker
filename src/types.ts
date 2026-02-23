@@ -18,7 +18,7 @@ export interface Task {
   title: string;
   type: 'sql' | 'pyspark' | 'project' | 'custom';
   target_daily: number;
-  is_mandatory: boolean;
+  created_at?: string;
 }
 
 export interface Log {
