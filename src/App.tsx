@@ -12,22 +12,24 @@ import {
   Briefcase,
   Plus,
   Users,
-  ChevronRight,
-  CheckCircle2,
   Flame,
-  Settings2,
   LogOut,
   Share2,
-  Moon,
-  Sun,
   X,
-  ExternalLink,
   Info,
   Trash2,
   Edit2,
+  Settings2,
   Trophy,
-  Medal
+  Medal,
+  Zap,
+  ChevronRight,
+  ChevronLeft,
+  Loader2
 } from 'lucide-react';
+import { cn, User, Task, Log, AppState } from './types';
+import confetti from 'canvas-confetti';
+import { motion, AnimatePresence } from 'framer-motion';
 
 const AppLogo = ({ size = "md" }: { size?: "sm" | "md" | "lg" }) => {
   const iconSizes = {
@@ -40,21 +42,13 @@ const AppLogo = ({ size = "md" }: { size?: "sm" | "md" | "lg" }) => {
     md: "p-2",
     lg: "p-3"
   };
-  const barWidth = {
-    sm: "w-6",
-    md: "w-8",
-    lg: "w-10"
-  };
 
   return (
-    <div className={cn("bg-white rounded-xl shadow-sm flex items-center justify-center", containerPadding[size])}>
-      <Brain className={cn("text-black", iconSizes[size])} />
+    <div className={`bg-white rounded-xl shadow-sm flex items-center justify-center ${containerPadding[size]}`}>
+      <Brain className={`text-black ${iconSizes[size]}`} />
     </div>
   );
 };
-import { cn, User, Task, Log, AppState } from './types';
-import confetti from 'canvas-confetti';
-import { motion, AnimatePresence } from 'framer-motion';
 
 // Responsive constants
 const GET_DAYS_TO_SHOW = () => window.innerWidth < 768 ? 91 : 371; // 13 weeks vs 53 weeks
@@ -68,6 +62,7 @@ export default function App() {
   const [handle, setHandle] = useState('');
   const [inputRoomId, setInputRoomId] = useState('default');
   const [joinError, setJoinError] = useState<string | null>(null);
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
   const socketRef = useRef<WebSocket | null>(null);
   const [canvasSize, setCanvasSize] = useState({ width: 800, height: 400 });
   const [daysToShow, setDaysToShow] = useState(GET_DAYS_TO_SHOW());
@@ -117,6 +112,7 @@ export default function App() {
   const [adminUsername, setAdminUsername] = useState('');
   const [adminPassword, setAdminPassword] = useState('');
   const [adminToken, setAdminToken] = useState<string | null>(null);
+  const [isAdminLoggingIn, setIsAdminLoggingIn] = useState(false);
   const [adminData, setAdminData] = useState<{ users: User[], tasks: Task[], logs: Log[], rooms: any[] } | null>(null);
   const [leaderboard, setLeaderboard] = useState<{ name: string, roomId: string, streak: number }[]>([]);
 
@@ -162,30 +158,38 @@ export default function App() {
     if (!userName.trim()) return;
 
     setJoinError(null);
-    const res = await fetch('/api/init-user', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: userName, roomId: inputRoomId, username: handle })
-    });
-    const data = await res.json();
+    setIsLoggingIn(true);
+    try {
+      const res = await fetch('/api/init-user', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: userName, roomId: inputRoomId, username: handle })
+      });
+      const data = await res.json();
 
-    if (!res.ok) {
-      setJoinError(data.error || 'Failed to join');
-      return;
-    }
+      if (!res.ok) {
+        setJoinError(data.error || 'Failed to join');
+        setIsLoggingIn(false);
+        return;
+      }
 
-    if (data.success) {
-      const userId = data.userId;
-      const newUser = { id: userId, name: userName, room_id: inputRoomId, username: handle };
-      setUser(newUser);
-      setRoomId(inputRoomId);
-      setIsJoining(false);
+      if (data.success) {
+        const userId = data.userId;
+        const newUser = { id: userId, name: userName, room_id: inputRoomId, username: handle };
+        setUser(newUser);
+        setRoomId(inputRoomId);
+        setIsJoining(false);
 
-      localStorage.setItem('learning_tracker_user', JSON.stringify(newUser));
-      localStorage.setItem('learning_tracker_room_id', inputRoomId);
+        localStorage.setItem('learning_tracker_user', JSON.stringify(newUser));
+        localStorage.setItem('learning_tracker_room_id', inputRoomId);
 
-      connectSocket(userId, inputRoomId);
-      fetchState(inputRoomId);
+        connectSocket(userId, inputRoomId);
+        fetchState(inputRoomId);
+      }
+    } catch (err) {
+      setJoinError('Connection error. Please try again.');
+    } finally {
+      setIsLoggingIn(false);
     }
   };
 
@@ -251,19 +255,10 @@ export default function App() {
               user_id: message.payload.userId,
               title: message.payload.title,
               type: message.payload.type,
-              target_daily: message.payload.targetDaily,
-              is_mandatory: true
+              target_daily: message.payload.targetDaily
             }]
           };
         });
-      }
-      if (message.type === 'mandatory_toggled') {
-        setState(prev => ({
-          ...prev,
-          tasks: prev.tasks.map(t =>
-            t.id === message.payload.taskId ? { ...t, is_mandatory: message.payload.isMandatory } : t
-          )
-        }));
       }
       if (message.type === 'task_deleted') {
         setState(prev => ({
@@ -300,12 +295,15 @@ export default function App() {
       return { ...prev, logs: newLogs };
     });
 
+    const task = state.tasks.find(t => t.id === taskId);
     if (value > 0) {
+      const isMega = task && value >= task.target_daily * 5;
       confetti({
-        particleCount: 50,
-        spread: 60,
+        particleCount: isMega ? 150 : 50,
+        spread: isMega ? 100 : 60,
         origin: { y: 0.8 },
-        colors: ['#10b981', '#3b82f6', '#f59e0b']
+        colors: isMega ? ['#f59e0b', '#ef4444', '#8b5cf6', '#3b82f6'] : ['#10b981', '#3b82f6', '#f59e0b'],
+        scalar: isMega ? 1.5 : 1
       });
     }
   };
@@ -328,20 +326,6 @@ export default function App() {
       socketRef.current.send(JSON.stringify({
         type: 'delete_task',
         payload: { taskId }
-      }));
-    }
-  };
-
-  const toggleMandatory = (taskId: string, isMandatory: boolean) => {
-    if (socketRef.current) {
-      socketRef.current.send(JSON.stringify({
-        type: 'toggle_mandatory',
-        payload: { taskId, isMandatory }
-      }));
-      // Local update
-      setState(prev => ({
-        ...prev,
-        tasks: prev.tasks.map(t => t.id === taskId ? { ...t, is_mandatory: isMandatory } : t)
       }));
     }
   };
@@ -372,35 +356,42 @@ export default function App() {
 
   const getStreak = (userId: string) => {
     const userTasks = state.tasks.filter(t => t.user_id === userId);
-    const mandatoryTasks = userTasks.filter(t => t.is_mandatory);
-
-    if (mandatoryTasks.length === 0) return 0;
-
-    // Get all dates where ALL mandatory tasks were completed
+    // Mandatory tasks can vary per day now. Logic needs to check each date.
     const datesWithLogs = state.logs
       .filter(l => l.user_id === userId)
       .map(l => l.date);
 
     const uniqueDates = [...new Set(datesWithLogs)].sort().reverse() as string[];
-    const completedDates: string[] = [];
+    const completedDates: { date: string, points: number }[] = [];
 
     for (const date of uniqueDates) {
-      const isDayComplete = mandatoryTasks.every(task => {
+      const dayTasks = userTasks.map(task => {
         const log = state.logs.find(l => l.user_id === userId && l.task_id === task.id && l.date === date);
-        return (log?.value || 0) >= task.target_daily;
+        return { target: task.target_daily, value: log?.value || 0 };
       });
-      if (isDayComplete) {
-        completedDates.push(date);
+
+      const isAnyTaskComplete = dayTasks.some(t => t.value >= t.target);
+      if (isAnyTaskComplete) {
+        const isBonusEarned = dayTasks.some(t => t.value >= t.target * 5);
+        completedDates.push({ date, points: isBonusEarned ? 2 : 1 });
       }
     }
 
+    // console.log(`Streak Debug [${userId}]:`, { completedDates, uniqueDates });
+
     let streak = 0;
-    let current = new Date();
+    const now = new Date();
+    // Midday UTC for absolute stability in diff calculations
+    const today = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate(), 12, 0, 0));
+    let current = today;
+
     for (let i = 0; i < completedDates.length; i++) {
-      const logDate = new Date(completedDates[i] as string);
+      const [y, m, d] = completedDates[i].date.split('-').map(Number);
+      const logDate = new Date(Date.UTC(y as number, (m as number) - 1, d as number, 12, 0, 0));
+
       const diff = Math.floor((current.getTime() - logDate.getTime()) / (1000 * 3600 * 24));
       if (diff <= 1) {
-        streak++;
+        streak += completedDates[i].points;
         current = logDate;
       } else {
         break;
@@ -444,6 +435,7 @@ export default function App() {
 
   const handleAdminLogin = async (e: React.FormEvent) => {
     e.preventDefault();
+    setIsAdminLoggingIn(true);
     console.log("Attempting admin login for:", adminUsername);
     try {
       const res = await fetch('/api/admin/login', {
@@ -465,6 +457,8 @@ export default function App() {
     } catch (err) {
       console.error("Admin login network error:", err);
       alert("Connection error. Please check if the server is running.");
+    } finally {
+      setIsAdminLoggingIn(false);
     }
   };
 
@@ -654,12 +648,23 @@ export default function App() {
               </motion.div>
             )}
             <motion.button
-              whileHover={{ scale: 1.05 }}
-              whileTap={{ scale: 0.95 }}
+              whileHover={{ scale: isLoggingIn ? 1 : 1.05 }}
+              whileTap={{ scale: isLoggingIn ? 1 : 0.95 }}
               type="submit"
-              className="w-full py-4 bg-white text-black rounded-xl font-semibold hover:bg-white/90 transition-all flex items-center justify-center gap-2"
+              disabled={isLoggingIn}
+              className={`w-full py-4 rounded-xl font-semibold transition-all flex items-center justify-center gap-2 ${isLoggingIn ? "bg-white/50 text-black/50 cursor-not-allowed" : "bg-white text-black hover:bg-white/90"
+                }`}
             >
-              Start Preparation <ChevronRight className="w-4 h-4" />
+              {isLoggingIn ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Preparing...
+                </>
+              ) : (
+                <>
+                  Start Preparation <ChevronRight className="w-4 h-4" />
+                </>
+              )}
             </motion.button>
           </form>
 
@@ -712,12 +717,21 @@ export default function App() {
                       placeholder="Admin Password"
                     />
                     <motion.button
-                      whileHover={{ scale: 1.02 }}
-                      whileTap={{ scale: 0.98 }}
+                      whileHover={{ scale: isAdminLoggingIn ? 1 : 1.02 }}
+                      whileTap={{ scale: isAdminLoggingIn ? 1 : 0.98 }}
                       type="submit"
-                      className="w-full py-3 bg-white text-black rounded-xl font-bold"
+                      disabled={isAdminLoggingIn}
+                      className={`w-full py-3 rounded-xl font-bold transition-all flex items-center justify-center gap-2 ${isAdminLoggingIn ? "bg-white/50 text-black/50 cursor-not-allowed" : "bg-white text-black hover:bg-white/90"
+                        }`}
                     >
-                      Login
+                      {isAdminLoggingIn ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          Logging in...
+                        </>
+                      ) : (
+                        "Login"
+                      )}
                     </motion.button>
                   </form>
                 )}
@@ -748,6 +762,22 @@ export default function App() {
             <div className="flex items-center gap-2 text-sm font-medium text-emerald-400">
               <Flame className="w-4 h-4" />
               {getStreak(user?.id || '')} Day Streak
+              {(() => {
+                const todayStr = new Date().toISOString().split('T')[0];
+                const hasBonusToday = user && state.tasks.filter(t => t.user_id === user.id).some(t => {
+                  const log = state.logs.find(l => l.user_id === user.id && l.task_id === t.id && l.date === todayStr);
+                  return log && log.value >= t.target_daily * 5;
+                });
+                return hasBonusToday && (
+                  <motion.span
+                    initial={{ scale: 0.5, opacity: 0 }}
+                    animate={{ scale: 1, opacity: 1 }}
+                    className="bg-yellow-400 text-black text-[10px] px-1.5 py-0.5 rounded font-black italic uppercase ml-1 animate-pulse"
+                  >
+                    +Bonus
+                  </motion.span>
+                );
+              })()}
             </div>
           </nav>
 
@@ -756,6 +786,14 @@ export default function App() {
             <div className="flex items-center gap-1 text-[10px] font-bold text-emerald-400 bg-emerald-400/10 px-2 py-1 rounded-full">
               <Flame className="w-3 h-3" />
               {getStreak(user?.id || '')}
+              {(() => {
+                const todayStr = new Date().toISOString().split('T')[0];
+                const hasBonusToday = user && state.tasks.filter(t => t.user_id === user.id).some(t => {
+                  const log = state.logs.find(l => l.user_id === user.id && l.task_id === t.id && l.date === todayStr);
+                  return log && log.value >= t.target_daily * 5;
+                });
+                return hasBonusToday && <Zap className="w-2 h-2 fill-yellow-400 text-yellow-400 ml-0.5" />;
+              })()}
             </div>
             <div className="text-[10px] font-bold text-white/40 bg-white/5 px-2 py-1 rounded-full">
               {roomId}
@@ -832,24 +870,30 @@ export default function App() {
                     const x = startX + col * pitch;
                     const y = startY + row * pitch;
 
-                    const mandatoryTasks = state.tasks.filter(t => t.user_id === user?.id && t.is_mandatory);
+                    const userTasksForHeatmap = state.tasks.filter(t => t.user_id === user?.id);
                     const dayLogs = state.logs.filter(l => l.user_id === user?.id && l.date === date);
 
                     let intensity = 0; // 0 to 4
-                    if (mandatoryTasks.length > 0) {
-                      const completedCount = mandatoryTasks.filter(t => {
+                    if (userTasksForHeatmap.length > 0) {
+                      const completedCount = userTasksForHeatmap.filter(t => {
                         const log = dayLogs.find(l => l.task_id === t.id);
                         return (log?.value || 0) >= t.target_daily;
                       }).length;
 
-                      const ratio = completedCount / mandatoryTasks.length;
-                      if (ratio === 0 && dayLogs.some(l => l.value > 0)) intensity = 1;
+                      const ratio = completedCount / userTasksForHeatmap.length;
+                      if (completedCount === 0 && dayLogs.some(l => l.value > 0)) intensity = 1;
                       else if (ratio > 0 && ratio < 0.5) intensity = 2;
                       else if (ratio >= 0.5 && ratio < 1) intensity = 3;
                       else if (ratio === 1) intensity = 4;
                     }
 
+                    const hasBonus = userTasksForHeatmap.some(t => {
+                      const log = dayLogs.find(l => l.task_id === t.id);
+                      return log && log.value >= t.target_daily * 5;
+                    });
+
                     const colors = ['#2A2A2A', '#064e3b', '#059669', '#10b981', '#34d399'];
+                    const fill = hasBonus ? '#fbbf24' : colors[intensity]; // Use amber/gold for bonus
 
                     // Month Labels
                     const d = new Date(date);
@@ -872,7 +916,7 @@ export default function App() {
                             y={y}
                             width={squareSize}
                             height={squareSize}
-                            fill={colors[intensity]}
+                            fill={fill}
                             cornerRadius={2}
                             stroke={date === selectedDate ? '#FFFFFF' : 'transparent'}
                             strokeWidth={1}
@@ -889,7 +933,7 @@ export default function App() {
                         y={y}
                         width={squareSize}
                         height={squareSize}
-                        fill={colors[intensity]}
+                        fill={fill}
                         cornerRadius={2}
                         stroke={date === selectedDate ? '#FFFFFF' : 'transparent'}
                         strokeWidth={1}
@@ -914,10 +958,8 @@ export default function App() {
                   <button
                     key={date}
                     onClick={() => setSelectedDate(date)}
-                    className={cn(
-                      "px-4 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all whitespace-nowrap",
-                      selectedDate === date ? "bg-white text-black" : "bg-white/5 text-white/40 hover:bg-white/10"
-                    )}
+                    className={`px-4 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all whitespace-nowrap ${selectedDate === date ? "bg-white text-black" : "bg-white/5 text-white/40 hover:bg-white/10"
+                      }`}
                   >
                     {date === today ? "Today" : date.split('-').slice(1).join('/')}
                   </button>
@@ -928,12 +970,27 @@ export default function App() {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {userTasks.map(task => {
                 const log = state.logs.find(l => l.user_id === user?.id && l.task_id === task.id && l.date === selectedDate);
-                const value = log?.value || 0;
+                const value = log ? log.value : 0;
                 const progress = Math.min(100, (value / task.target_daily) * 100);
+                const isUltraBonus = value >= task.target_daily * 5;
 
                 return (
-                  <div key={task.id} className="bg-[#1A1A1A] p-6 rounded-2xl border border-white/10 shadow-sm group hover:border-white/30 transition-all">
-                    <div className="flex items-start justify-between mb-4">
+                  <div
+                    key={task.id}
+                    className={`bg-[#1A1A1A] p-6 rounded-2xl border border-white/5 relative overflow-hidden group transition-all hover:border-white/20 ${isUltraBonus ? "ring-2 ring-yellow-500/50 border-yellow-500/50 shadow-[0_0_20px_rgba(245,158,11,0.2)]" : ""
+                      }`}
+                  >
+                    {isUltraBonus && (
+                      <motion.div
+                        initial={{ scale: 0.8, opacity: 0 }}
+                        animate={{ scale: 1, opacity: 1 }}
+                        className="absolute -top-1 -right-1 bg-gradient-to-r from-yellow-400 via-orange-500 to-red-500 px-3 py-1 rounded-bl-xl z-10 flex items-center gap-1 shadow-lg"
+                      >
+                        <Zap className="w-3 h-3 text-white fill-white" />
+                        <span className="text-[9px] font-black italic tracking-tighter text-white uppercase">5X Ultra Bonus</span>
+                      </motion.div>
+                    )}
+                    <div className="flex justify-between items-start mb-4">
                       <div className="flex gap-2">
                         <div className="p-3 bg-[#2A2A2A] rounded-xl group-hover:bg-white group-hover:text-black transition-all">
                           {task.type === 'sql' && <Database className="w-5 h-5" />}
@@ -947,16 +1004,6 @@ export default function App() {
                           title="Delete Task"
                         >
                           <Trash2 className="w-5 h-5" />
-                        </button>
-                        <button
-                          onClick={() => toggleMandatory(task.id, !task.is_mandatory)}
-                          className={cn(
-                            "p-3 rounded-xl transition-all opacity-0 group-hover:opacity-100",
-                            task.is_mandatory ? "bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500 hover:text-white" : "bg-[#2A2A2A] text-white/40 hover:bg-white/10 hover:text-white"
-                          )}
-                          title={task.is_mandatory ? "Mandatory for Streak" : "Optional for Streak"}
-                        >
-                          <CheckCircle2 className="w-5 h-5" />
                         </button>
                       </div>
                       <div className="text-right">
@@ -1059,7 +1106,27 @@ export default function App() {
                       </div>
                     </div>
                   </div>
-                  {getStreak(u.id) > 0 && <Flame className="w-4 h-4 text-orange-500" />}
+                  <div className="flex items-center gap-2">
+                    {(() => {
+                      const userLogsToday = state.logs.filter(l => l.user_id === u.id && l.date === selectedDate);
+                      const userTasksCount = state.tasks.filter(t => t.user_id === u.id);
+                      const hasBonusToday = userTasksCount.some(t => {
+                        const log = userLogsToday.find(l => l.task_id === t.id);
+                        return log && log.value >= t.target_daily * 5;
+                      });
+
+                      return (
+                        <>
+                          {getStreak(u.id) > 0 && (
+                            <div className="flex items-center">
+                              <Flame className={`w-4 h-4 ${hasBonusToday ? "text-yellow-400 animate-pulse" : "text-orange-500"}`} />
+                              {hasBonusToday && <span className="text-[10px] font-bold text-yellow-400 ml-0.5">+2</span>}
+                            </div>
+                          )}
+                        </>
+                      );
+                    })()}
+                  </div>
                 </div>
               ))}
             </div>
