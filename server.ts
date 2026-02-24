@@ -13,76 +13,59 @@ const __dirname = path.dirname(__filename);
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: {
-    rejectUnauthorized: false
-  },
-  connectionTimeoutMillis: 10000, // 10 seconds timeout
-  idleTimeoutMillis: 30000,
-  max: 20
+    rejectUnauthorized: false // Required for Supabase/Render
+  }
 });
 
-let isDbReady = false;
+// Initialize Database
+const initDb = async () => {
+  const client = await pool.connect();
+  try {
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS rooms (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL
+      );
 
-// Initialize Database with retry logic
-const initDb = async (retries = 5) => {
-  while (retries > 0) {
-    let client;
-    try {
-      console.log(`Attempting to connect to database... (${retries} retries left)`);
-      client = await pool.connect();
-      await client.query(`
-        CREATE TABLE IF NOT EXISTS rooms (
-          id TEXT PRIMARY KEY,
-          name TEXT NOT NULL
-        );
+      CREATE TABLE IF NOT EXISTS users (
+        id TEXT PRIMARY KEY,
+        username TEXT UNIQUE NOT NULL,
+        name TEXT NOT NULL,
+        room_id TEXT REFERENCES rooms(id) ON DELETE SET NULL
+      );
 
-        CREATE TABLE IF NOT EXISTS users (
-          id TEXT PRIMARY KEY,
-          username TEXT UNIQUE NOT NULL,
-          name TEXT NOT NULL,
-          room_id TEXT REFERENCES rooms(id) ON DELETE SET NULL
-        );
+      CREATE TABLE IF NOT EXISTS tasks (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        title TEXT NOT NULL,
+        type TEXT NOT NULL,
+        target_daily INTEGER DEFAULT 1,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
 
-        CREATE TABLE IF NOT EXISTS tasks (
-          id TEXT PRIMARY KEY,
-          user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-          title TEXT NOT NULL,
-          type TEXT NOT NULL,
-          target_daily INTEGER DEFAULT 1,
-          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
+      ALTER TABLE tasks ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
 
-        ALTER TABLE tasks ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+      CREATE TABLE IF NOT EXISTS logs (
+        id SERIAL PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        date TEXT NOT NULL,
+        value INTEGER DEFAULT 0,
+        details TEXT
+      );
 
-        CREATE TABLE IF NOT EXISTS logs (
-          id SERIAL PRIMARY KEY,
-          user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-          task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-          date TEXT NOT NULL,
-          value INTEGER DEFAULT 0,
-          details TEXT
-        );
-
-        DROP TABLE IF EXISTS task_mandatory_settings;
-      `);
-      console.log("Database initialized successfully - Mandatory features removed");
-      isDbReady = true;
-      return; // Success!
-    } catch (err) {
-      console.error("Database initialization error:", err);
-      retries--;
-      if (retries === 0) {
-        console.error("Max retries reached. Some features may not work.");
-        return;
-      }
-      console.log("Retrying in 5 seconds...");
-      await new Promise(res => setTimeout(res, 5000));
-    } finally {
-      if (client) client.release();
-    }
+      DROP TABLE IF EXISTS task_mandatory_settings;
+    `);
+    console.log("Database initialized successfully - Simplified connection restored");
+  } catch (err) {
+    console.error("Database initialization error:", err);
+  } finally {
+    client.release();
   }
 };
 
 async function startServer() {
+  await initDb();
   const app = express();
   const server = createServer(app);
   const wss = new WebSocketServer({ server });
@@ -90,31 +73,12 @@ async function startServer() {
 
   app.use(express.json());
 
-  // Health check for Render
-  app.get("/health", (req, res) => {
-    res.json({
-      status: "online",
-      database: isDbReady ? "connected" : "connecting"
-    });
-  });
-
   app.get("/api/ping", (req, res) => {
-    res.json({ pong: true, isDbReady });
+    res.json({ pong: true });
   });
-
-  // Start initialization in background
-  initDb();
-
-  // Middleware to block API requests until DB is ready
-  const dbGuard = (req: any, res: any, next: any) => {
-    if (!isDbReady) {
-      return res.status(503).json({ error: "Database is initializing. Please try again in a few seconds." });
-    }
-    next();
-  };
 
   // API Routes
-  app.get("/api/state/:roomId", dbGuard, async (req, res) => {
+  app.get("/api/state/:roomId", async (req, res) => {
     const { roomId } = req.params;
     try {
       const usersRes = await pool.query("SELECT * FROM users WHERE room_id = $1", [roomId]);
