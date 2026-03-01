@@ -271,7 +271,9 @@ async function startServer() {
         const userTasks = allTasks.filter(t => t.user_id === u.id);
         const userLogs = allLogs.filter(l => l.user_id === u.id);
 
-        if (userTasks.length === 0) return { ...u, streak: 0 };
+        const totalVolume = userLogs.reduce((sum, log) => sum + (log.value || 0), 0);
+
+        if (userTasks.length === 0) return { ...u, streak: 0, totalVolume };
 
         const datesWithLogs = [...new Set(userLogs.map(l => l.date))].sort().reverse() as string[];
         const completedDates: { date: string, points: number }[] = [];
@@ -307,12 +309,12 @@ async function startServer() {
             break;
           }
         }
-        return { name: u.name, username: u.username, roomId: u.room_id, streak };
+        return { name: u.name, username: u.username, roomId: u.room_id, streak, totalVolume };
       });
 
       const sortedLeaderboard = leaderboard
-        .filter((u: any) => u.streak > 0)
-        .sort((a, b) => b.streak - a.streak)
+        .filter((u: any) => u.streak > 0 || u.totalVolume > 0)
+        .sort((a, b) => b.streak !== a.streak ? b.streak - a.streak : b.totalVolume - a.totalVolume)
         .slice(0, 5);
 
       res.json({ leaderboard: sortedLeaderboard });
