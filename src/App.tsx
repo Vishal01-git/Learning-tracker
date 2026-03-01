@@ -63,7 +63,7 @@ const AppLogo = ({ size = "md" }: { size?: "sm" | "md" | "lg" }) => {
 };
 
 // Responsive constants
-const GET_DAYS_TO_SHOW = () => window.innerWidth < 768 ? 91 : 371; // 13 weeks vs 53 weeks
+const GET_DAYS_TO_SHOW = () => 371; // Always show 53 weeks to enable full native horizontal scrolling on all devices
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'analytics'>('dashboard');
@@ -978,19 +978,19 @@ export default function App() {
                   </div>
                 </div>
 
-                <div ref={heatmapScrollRef} className="overflow-x-auto pb-4 custom-scrollbar no-scrollbar flex gap-1.5 md:gap-2 scroll-smooth">
+                <div ref={heatmapScrollRef} className="overflow-x-auto pb-4 custom-scrollbar no-scrollbar flex gap-[3px] scroll-smooth">
                   {/* Day Labels Column */}
-                  <div className="flex flex-col gap-1.5 md:gap-2 pr-2 text-[9px] md:text-[10px] text-white/30 font-bold justify-between py-[18px]">
-                    <span className="opacity-0 w-6 leading-none">Sun</span>
-                    <span className="w-6 leading-none">Mon</span>
-                    <span className="opacity-0 w-6 leading-none">Tue</span>
-                    <span className="w-6 leading-none">Wed</span>
-                    <span className="opacity-0 w-6 leading-none">Thu</span>
-                    <span className="w-6 leading-none">Fri</span>
-                    <span className="opacity-0 w-6 leading-none">Sat</span>
+                  <div className="flex flex-col gap-[3px] pr-2 text-[9px] text-white/30 font-bold pt-4">
+                    <span className="opacity-0 h-[10px] flex items-center leading-none">Sun</span>
+                    <span className="h-[10px] flex items-center leading-none">Mon</span>
+                    <span className="opacity-0 h-[10px] flex items-center leading-none">Tue</span>
+                    <span className="h-[10px] flex items-center leading-none">Wed</span>
+                    <span className="opacity-0 h-[10px] flex items-center leading-none">Thu</span>
+                    <span className="h-[10px] flex items-center leading-none">Fri</span>
+                    <span className="opacity-0 h-[10px] flex items-center leading-none">Sat</span>
                   </div>
 
-                  <div className="flex gap-1.5 md:gap-2 pt-4">
+                  <div className="flex gap-[3px] pt-4">
                     {/* Group days into weeks */}
                     {Array.from({ length: Math.ceil(lastDays.length / 7) }).map((_, colIdx) => {
                       const weekDays = lastDays.slice(colIdx * 7, colIdx * 7 + 7);
@@ -1007,7 +1007,7 @@ export default function App() {
                       }
 
                       return (
-                        <div key={colIdx} className="relative flex flex-col gap-1.5 md:gap-2">
+                        <div key={colIdx} className="relative flex flex-col gap-[3px]">
                           {monthLabel && (
                             <span className="absolute -top-5 left-0 text-[10px] text-white/40 font-bold whitespace-nowrap">
                               {monthLabel}
@@ -1022,7 +1022,7 @@ export default function App() {
                                 key={date}
                                 onClick={() => setSelectedDate(date)}
                                 title={data.totalMandatory > 0 ? `${data.completedCount} / ${data.totalMandatory} tasks on ${date}${data.hasBonus ? ' (Bonus!)' : ''}` : (data.intensity > 0 ? `Activity on ${date}` : `No activity on ${date}`)}
-                                className={`w-3 h-3 md:w-[14px] md:h-[14px] rounded-[2px] transition-all duration-200 hover:scale-125 hover:ring-1 hover:ring-white/50 border ${date === selectedDate ? 'border-white' : 'border-black/10'} ${bgClass}`}
+                                className={`w-[10px] h-[10px] rounded-[2px] transition-all duration-200 hover:scale-125 hover:ring-1 hover:ring-white/50 border ${date === selectedDate ? 'border-white' : 'border-black/10'} ${bgClass}`}
                                 aria-label={`Activity on ${date}`}
                               />
                             );
