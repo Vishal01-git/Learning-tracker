@@ -4,7 +4,6 @@
  */
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Stage, Layer, Rect, Text, Group, Line } from 'react-konva';
 import {
   Brain,
   Database,
@@ -81,6 +80,7 @@ export default function App() {
   const [canvasSize, setCanvasSize] = useState({ width: 800, height: 400 });
   const [daysToShow, setDaysToShow] = useState(GET_DAYS_TO_SHOW());
   const containerRef = useRef<HTMLDivElement>(null);
+  const heatmapScrollRef = useRef<HTMLDivElement>(null);
 
   // Selected Date for logging/viewing
   const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
@@ -366,6 +366,60 @@ export default function App() {
     }
     return days;
   }, [daysToShow]);
+
+  const activityMap = useMemo(() => {
+    const map: Record<string, { intensity: number, completedCount: number, totalMandatory: number, hasBonus: boolean }> = {};
+    if (!user) return map;
+
+    const userTasksForMap = state.tasks.filter(t => t.user_id === user.id);
+    const userLogs = state.logs.filter(l => l.user_id === user.id);
+
+    lastDays.forEach(date => {
+      const dayLogs = userLogs.filter(l => l.date === date);
+      let intensity = 0;
+      let completedCount = 0;
+      let hasBonus = false;
+
+      if (userTasksForMap.length > 0) {
+        completedCount = userTasksForMap.filter(t => {
+          const log = dayLogs.find(l => l.task_id === t.id);
+          return (log?.value || 0) >= t.target_daily;
+        }).length;
+
+        const ratio = completedCount / userTasksForMap.length;
+        if (completedCount === 0 && dayLogs.some(l => l.value > 0)) intensity = 1;
+        else if (ratio > 0 && ratio < 0.5) intensity = 2;
+        else if (ratio >= 0.5 && ratio < 1) intensity = 3;
+        else if (ratio === 1) intensity = 4;
+
+        hasBonus = userTasksForMap.some(t => {
+          const log = dayLogs.find(l => l.task_id === t.id);
+          return log && log.value >= t.target_daily * 5;
+        });
+      }
+
+      map[date] = { intensity, completedCount, totalMandatory: userTasksForMap.length, hasBonus };
+    });
+
+    return map;
+  }, [state.tasks, state.logs, user, lastDays]);
+
+  // Auto-scroll heatmap to the right (most recent)
+  useEffect(() => {
+    const scrollToRight = () => {
+      if (heatmapScrollRef.current) {
+        heatmapScrollRef.current.scrollLeft = heatmapScrollRef.current.scrollWidth;
+      }
+    };
+
+    // Attempt multiple times to guarantee post-render execution after widths compute
+    requestAnimationFrame(() => {
+      scrollToRight();
+      setTimeout(scrollToRight, 50);
+      setTimeout(scrollToRight, 150);
+      setTimeout(scrollToRight, 350);
+    });
+  }, [daysToShow, activeTab, lastDays]);
 
   const userTasks = state.tasks.filter(t => t.user_id === user?.id);
 
@@ -924,112 +978,59 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="overflow-x-auto pb-4 custom-scrollbar no-scrollbar">
-                  <Stage
-                    width={Math.max(canvasSize.width - 48, (lastDays.length / 7) * (window.innerWidth < 768 ? 22 : 14) + 60)}
-                    height={window.innerWidth < 768 ? 200 : 150}
-                  >
-                    <Layer>
-                      {/* Day Labels */}
-                      {['Mon', 'Wed', 'Fri'].map((day, i) => (
-                        <Text
-                          key={day}
-                          text={day}
-                          x={window.innerWidth < 768 ? 5 : 0}
-                          y={window.innerWidth < 768 ? 42 + (i * 2 + 1) * 22 : 28 + (i * 2 + 1) * 14}
-                          fontSize={window.innerWidth < 768 ? 10 : 9}
-                          fontFamily="Inter"
-                          fill="#FFFFFF"
-                          opacity={0.3}
-                        />
-                      ))}
+                <div ref={heatmapScrollRef} className="overflow-x-auto pb-4 custom-scrollbar no-scrollbar flex gap-1.5 md:gap-2 scroll-smooth">
+                  {/* Day Labels Column */}
+                  <div className="flex flex-col gap-1.5 md:gap-2 pr-2 text-[9px] md:text-[10px] text-white/30 font-bold justify-between py-[18px]">
+                    <span className="opacity-0 w-6 leading-none">Sun</span>
+                    <span className="w-6 leading-none">Mon</span>
+                    <span className="opacity-0 w-6 leading-none">Tue</span>
+                    <span className="w-6 leading-none">Wed</span>
+                    <span className="opacity-0 w-6 leading-none">Thu</span>
+                    <span className="w-6 leading-none">Fri</span>
+                    <span className="opacity-0 w-6 leading-none">Sat</span>
+                  </div>
 
-                      {/* Heatmap Grid */}
-                      {lastDays.map((date, dayIdx) => {
-                        const col = Math.floor(dayIdx / 7);
-                        const row = dayIdx % 7;
-                        const isMobile = window.innerWidth < 768;
-                        const squareSize = isMobile ? 18 : 11;
-                        const pitch = isMobile ? 22 : 14;
-                        const startX = isMobile ? 40 : 30;
-                        const startY = isMobile ? 35 : 25;
+                  <div className="flex gap-1.5 md:gap-2 pt-4">
+                    {/* Group days into weeks */}
+                    {Array.from({ length: Math.ceil(lastDays.length / 7) }).map((_, colIdx) => {
+                      const weekDays = lastDays.slice(colIdx * 7, colIdx * 7 + 7);
 
-                        const x = startX + col * pitch;
-                        const y = startY + row * pitch;
-
-                        const userTasksForHeatmap = state.tasks.filter(t => t.user_id === user?.id);
-                        const dayLogs = state.logs.filter(l => l.user_id === user?.id && l.date === date);
-
-                        let intensity = 0; // 0 to 4
-                        if (userTasksForHeatmap.length > 0) {
-                          const completedCount = userTasksForHeatmap.filter(t => {
-                            const log = dayLogs.find(l => l.task_id === t.id);
-                            return (log?.value || 0) >= t.target_daily;
-                          }).length;
-
-                          const ratio = completedCount / userTasksForHeatmap.length;
-                          if (completedCount === 0 && dayLogs.some(l => l.value > 0)) intensity = 1;
-                          else if (ratio > 0 && ratio < 0.5) intensity = 2;
-                          else if (ratio >= 0.5 && ratio < 1) intensity = 3;
-                          else if (ratio === 1) intensity = 4;
-                        }
-
-                        const hasBonus = userTasksForHeatmap.some(t => {
-                          const log = dayLogs.find(l => l.task_id === t.id);
-                          return log && log.value >= t.target_daily * 5;
-                        });
-
-                        const colors = ['#2A2A2A', '#064e3b', '#059669', '#10b981', '#34d399'];
-                        const fill = hasBonus ? '#fbbf24' : colors[intensity]; // Use amber/gold for bonus
-
-                        // Month Labels
-                        const d = new Date(date);
-                        if (row === 0 && d.getDate() <= 7) {
+                      // Check if a new month starts in this week (day <= 7) to render a top label
+                      const firstDay = weekDays[0];
+                      let monthLabel = null;
+                      if (firstDay) {
+                        const d = new Date(firstDay);
+                        if (d.getDate() <= 7) {
                           const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-                          return (
-                            <Group key={date}>
-                              <Text
-                                text={monthNames[d.getMonth()]}
-                                x={x}
-                                y={isMobile ? 10 : 5}
-                                fontSize={isMobile ? 11 : 9}
-                                fontFamily="Inter"
-                                fill="#FFFFFF"
-                                opacity={0.4}
-                                fontStyle="bold"
-                              />
-                              <Rect
-                                x={x}
-                                y={y}
-                                width={squareSize}
-                                height={squareSize}
-                                fill={fill}
-                                cornerRadius={2}
-                                stroke={date === selectedDate ? '#FFFFFF' : 'transparent'}
-                                strokeWidth={1}
-                                onClick={() => setSelectedDate(date)}
-                              />
-                            </Group>
-                          );
+                          monthLabel = monthNames[d.getMonth()];
                         }
+                      }
 
-                        return (
-                          <Rect
-                            key={date}
-                            x={x}
-                            y={y}
-                            width={squareSize}
-                            height={squareSize}
-                            fill={fill}
-                            cornerRadius={2}
-                            stroke={date === selectedDate ? '#FFFFFF' : 'transparent'}
-                            strokeWidth={1}
-                            onClick={() => setSelectedDate(date)}
-                          />
-                        );
-                      })}
-                    </Layer>
-                  </Stage>
+                      return (
+                        <div key={colIdx} className="relative flex flex-col gap-1.5 md:gap-2">
+                          {monthLabel && (
+                            <span className="absolute -top-5 left-0 text-[10px] text-white/40 font-bold whitespace-nowrap">
+                              {monthLabel}
+                            </span>
+                          )}
+                          {weekDays.map(date => {
+                            const data = activityMap[date] || { intensity: 0, completedCount: 0, totalMandatory: 0, hasBonus: false };
+                            const colors = ['bg-[#2A2A2A]', 'bg-[#064e3b]', 'bg-[#059669]', 'bg-[#10b981]', 'bg-[#34d399]'];
+                            const bgClass = data.hasBonus ? 'bg-[#fbbf24]' : colors[data.intensity];
+                            return (
+                              <button
+                                key={date}
+                                onClick={() => setSelectedDate(date)}
+                                title={data.totalMandatory > 0 ? `${data.completedCount} / ${data.totalMandatory} tasks on ${date}${data.hasBonus ? ' (Bonus!)' : ''}` : (data.intensity > 0 ? `Activity on ${date}` : `No activity on ${date}`)}
+                                className={`w-3 h-3 md:w-[14px] md:h-[14px] rounded-[2px] transition-all duration-200 hover:scale-125 hover:ring-1 hover:ring-white/50 border ${date === selectedDate ? 'border-white' : 'border-black/10'} ${bgClass}`}
+                                aria-label={`Activity on ${date}`}
+                              />
+                            );
+                          })}
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               </div>
 
