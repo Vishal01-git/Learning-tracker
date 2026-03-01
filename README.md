@@ -1,4 +1,4 @@
-# 🚀 Learning Tracker
+# 🚀 Learning Tracker 2.0
 
 A premium, high-performance web application designed for elite consistency and skill-building. Whether you're mastering Data Engineering, practicing SQL, or building projects, Learning Tracker keeps you motivated with a beautiful UI, a multi-tiered reward system, and real-time collaboration.
 
@@ -9,30 +9,37 @@ A premium, high-performance web application designed for elite consistency and s
 
 ## ✨ Core Features
 
-### 📊 Consistency Matrix (Heatmap)
-- **Visual Progress**: Track your aggregate effort over a 1-year (Desktop) or 3-month (Mobile) window.
-- **Intensity Grading**: 5-level green intensity grading for standard daily completions.
-- **Golden Bonus Days**: Achieve exceptional goals (5x target) to see your matrix squares turn into bright gold/amber.
-- **Interactive History**: Click any square in the matrix to view or edit historical progress for that specific date.
+### 🎮 Gamification Engine (V2)
+- **XP Ecosystem:** Earn Experience Points incrementally for logging your daily tasks.
+- **Dynamic Leveling Framework:** Climb through ranks with scaling logic (`XP = Level^2 * 100`) to increase challenge consistently.
+- **Global Leagues:** Evolve from Bronze, to Silver, to Gold Leagues automatically as you perform.
+- **Special Badges & Achievements:** Unlock milestone rewards tailored to persistence, like the 'Centurion' badge (100 log minimum) and the 'SQL Master' emblem.
 
-### ⚡ Ultra Bonus Streak System
-- **Double Reward Logic**: Earn 1 streak point for regular goal completion, or push your limits to earn **2 streak points** for completing 5x your daily target.
-- **5X Ultra Bonus Badge**: A glowing animated badge appears on task cards once the mega-threshold is exceeded.
-- **Visual Celebration**: Trigger "Mega Confetti" and special dashboard animations when achieving high-effort milestones.
-- **Dynamic Header**: Pulsating "+BONUS" indicator in the navigation bar to signify today's exceptional achievement.
+### 📈 Advanced Analytics Dashboard (V2)
+- **Data Visualization Insights:** Utilize precise `recharts` graphs summarizing weekly output variables natively rendered.
+- **Productivity Modeling:** Track and visualize 'Productivity by Day' using fluid bar charts exposing output spikes and trends.
+- **Micro-Focus Distribution:** Pinpoint precisely where you focus your efforts (SQL vs Projects vs PySpark) via interactive Pie Charts.
 
-### 🏆 Collaborative Ecosystem
-- **Instant Syncing**: Built on modern WebSockets for zero-latency updates across all members in a collaborative "Room".
-- **Teammate Flair**: See your friends' performance in real-time. Collaborators who hit their bonus goals display glowing embers and bonus point indicators in the sidebar.
-- **Global Leaderboard**: Compete with students and developers globally. The leaderboard automatically calculates weighted streaks to reward the most consistent high-performers.
-- **Unique Handles**: Secure, passwordless login using unique handles (e.g., @alex_chen) for seamless identity management.
+### 🧠 Structured Micro-Reflection Logging (V2)
+- Instead of loose daily logs, the system forces structured high-retention Feynman Logs.
+- **Core Concept Extraction:** Distill exactly "What did I learn today?" into a single focal topic.
+- **Feynman Summary Execution:** Explain the learned methodology in one paragraph simply to strengthen cognitive retention reliably.
+
+### 📊 Pure HTML/DOM Consistency Matrix
+- **Visual Progress:** Track your aggregate effort over a rolling 1-year window seamlessly.
+- **Fully Responsive Matrix:** Re-structured entirely away from Canvas frameworks into native hyper-fast HTML & Tailwind layouts.
+- **Native Auto-Scroll:** Intelligent rendering instantly focuses you on your most recent active month entirely without third-party tooltip libraries slowing down performance.
+- **Golden Bonus Logs:** Achieve exceptional goals (5x target) to ignite your matrix squares into bright active amber/gold.
+
+### 🏆 Collaborative Real-Time Ecosystem
+- **Instant WebSockets Sync:** Built on modern WebSockets for true zero-latency push-updates across all active room members globally.
+- **Live Collaborative Leaderboard:** Weighs current "Streak Status" supplemented smoothly by aggregate Volume/XP logic.
+- **Teammate Flair:** Visually detect immediately when your friends are heavily active, glowing, or rapidly progressing.
 
 ### 📱 Premium UX & Design
-- **Glassmorphic UI**: High-end dark mode interface with smooth transitions, micro-animations, and vibrant accents.
-- **Live Feedback**: Real-time loading spinners and "Preparing..." states ensure users are never left guessing during authentication or data sync.
-- **Full Customization**: Add, edit, or delete goals on the fly. Adjust daily targets to match your evolving learning curve.
-- **Secure Admin Dashboard**: Comprehensive controls to manage users, audit activity streams, and maintain platform integrity.
+- **Glassmorphic UI:** High-end dark mode graphical interface operating smooth component transitions, scalable aesthetics, and brilliant emerald/dark accents.
+- **Robust Portability:** Fully progressive layout logic functioning responsively identically on Desktop monitors, Tablets, and Mobile phones flawlessly.
 
 ---
 
-*Transforming average efforts into extraordinary excellence through daily discipline.*
+*Transforming average efforts into extraordinary excellence through absolute daily discipline.*

@@ -4,7 +4,6 @@
  */
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Stage, Layer, Rect, Text, Group, Line } from 'react-konva';
 import {
   Brain,
   Database,
@@ -30,6 +29,19 @@ import {
 import { cn, User, Task, Log, AppState } from './types';
 import confetti from 'canvas-confetti';
 import { motion, AnimatePresence } from 'framer-motion';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
+import { calculateXP, calculateLevel, calculateBadges, getLeagueInfo } from './utils/gamification';
+
+const parseLogDetails = (detailsString?: string) => {
+  if (!detailsString) return null;
+  try {
+    const parsed = JSON.parse(detailsString);
+    if (parsed.concept && parsed.summary) return parsed;
+    return { concept: 'General', summary: detailsString };
+  } catch (e) {
+    return { concept: 'Note', summary: detailsString }; // Fallback for old plain-text logs
+  }
+};
 
 const AppLogo = ({ size = "md" }: { size?: "sm" | "md" | "lg" }) => {
   const iconSizes = {
@@ -51,9 +63,10 @@ const AppLogo = ({ size = "md" }: { size?: "sm" | "md" | "lg" }) => {
 };
 
 // Responsive constants
-const GET_DAYS_TO_SHOW = () => window.innerWidth < 768 ? 91 : 371; // 13 weeks vs 53 weeks
+const GET_DAYS_TO_SHOW = () => 371; // Always show 53 weeks to enable full native horizontal scrolling on all devices
 
 export default function App() {
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'analytics'>('dashboard');
   const [user, setUser] = useState<User | null>(null);
   const [roomId, setRoomId] = useState<string>('default');
   const [state, setState] = useState<AppState>({ users: [], tasks: [], logs: [] });
@@ -67,13 +80,15 @@ export default function App() {
   const [canvasSize, setCanvasSize] = useState({ width: 800, height: 400 });
   const [daysToShow, setDaysToShow] = useState(GET_DAYS_TO_SHOW());
   const containerRef = useRef<HTMLDivElement>(null);
+  const heatmapScrollRef = useRef<HTMLDivElement>(null);
 
   // Selected Date for logging/viewing
   const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
 
   // Modals State
   const [activeLogTask, setActiveLogTask] = useState<{ task: Task; date: string } | null>(null);
-  const [logDetails, setLogDetails] = useState('');
+  const [logConcept, setLogConcept] = useState('');
+  const [logSummary, setLogSummary] = useState('');
   const [logValue, setLogValue] = useState<number>(1);
   const [isAddTaskModalOpen, setIsAddTaskModalOpen] = useState(false);
   const [newTaskTitle, setNewTaskTitle] = useState('');
@@ -114,7 +129,7 @@ export default function App() {
   const [adminToken, setAdminToken] = useState<string | null>(null);
   const [isAdminLoggingIn, setIsAdminLoggingIn] = useState(false);
   const [adminData, setAdminData] = useState<{ users: User[], tasks: Task[], logs: Log[], rooms: any[] } | null>(null);
-  const [leaderboard, setLeaderboard] = useState<{ name: string, roomId: string, streak: number }[]>([]);
+  const [leaderboard, setLeaderboard] = useState<any[]>([]);
 
   const fetchLeaderboard = async () => {
     try {
@@ -352,6 +367,60 @@ export default function App() {
     return days;
   }, [daysToShow]);
 
+  const activityMap = useMemo(() => {
+    const map: Record<string, { intensity: number, completedCount: number, totalMandatory: number, hasBonus: boolean }> = {};
+    if (!user) return map;
+
+    const userTasksForMap = state.tasks.filter(t => t.user_id === user.id);
+    const userLogs = state.logs.filter(l => l.user_id === user.id);
+
+    lastDays.forEach(date => {
+      const dayLogs = userLogs.filter(l => l.date === date);
+      let intensity = 0;
+      let completedCount = 0;
+      let hasBonus = false;
+
+      if (userTasksForMap.length > 0) {
+        completedCount = userTasksForMap.filter(t => {
+          const log = dayLogs.find(l => l.task_id === t.id);
+          return (log?.value || 0) >= t.target_daily;
+        }).length;
+
+        const ratio = completedCount / userTasksForMap.length;
+        if (completedCount === 0 && dayLogs.some(l => l.value > 0)) intensity = 1;
+        else if (ratio > 0 && ratio < 0.5) intensity = 2;
+        else if (ratio >= 0.5 && ratio < 1) intensity = 3;
+        else if (ratio === 1) intensity = 4;
+
+        hasBonus = userTasksForMap.some(t => {
+          const log = dayLogs.find(l => l.task_id === t.id);
+          return log && log.value >= t.target_daily * 5;
+        });
+      }
+
+      map[date] = { intensity, completedCount, totalMandatory: userTasksForMap.length, hasBonus };
+    });
+
+    return map;
+  }, [state.tasks, state.logs, user, lastDays]);
+
+  // Auto-scroll heatmap to the right (most recent)
+  useEffect(() => {
+    const scrollToRight = () => {
+      if (heatmapScrollRef.current) {
+        heatmapScrollRef.current.scrollLeft = heatmapScrollRef.current.scrollWidth;
+      }
+    };
+
+    // Attempt multiple times to guarantee post-render execution after widths compute
+    requestAnimationFrame(() => {
+      scrollToRight();
+      setTimeout(scrollToRight, 50);
+      setTimeout(scrollToRight, 150);
+      setTimeout(scrollToRight, 350);
+    });
+  }, [daysToShow, activeTab, lastDays]);
+
   const userTasks = state.tasks.filter(t => t.user_id === user?.id);
 
   const getStreak = (userId: string) => {
@@ -402,9 +471,14 @@ export default function App() {
 
   const handleLogSubmit = () => {
     if (activeLogTask) {
-      updateLog(activeLogTask.task.id, activeLogTask.date, logValue, logDetails);
+      const structuredDetails = JSON.stringify({
+        concept: logConcept.trim(),
+        summary: logSummary.trim()
+      });
+      updateLog(activeLogTask.task.id, activeLogTask.date, logValue, structuredDetails);
       setActiveLogTask(null);
-      setLogDetails('');
+      setLogConcept('');
+      setLogSummary('');
       setLogValue(1);
     }
   };
@@ -502,6 +576,30 @@ export default function App() {
     }
   };
 
+  const aggregatedData = useMemo(() => {
+    if (!user) return [];
+    const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    const userLogs = state.logs.filter(l => l.user_id === user.id);
+    const mapped = days.map((day, idx) => {
+      const total = userLogs.filter(l => new Date(l.date).getDay() === idx).reduce((acc, l) => acc + (l.value || 0), 0);
+      return { name: day.substring(0, 3), volume: total };
+    });
+    return [...mapped.slice(1), mapped[0]]; // Mon ... Sun
+  }, [state.logs, user]);
+
+  const pieData = useMemo(() => {
+    if (!user) return [];
+    const userLogs = state.logs.filter(l => l.user_id === user.id);
+    const types = ['sql', 'pyspark', 'project', 'custom'];
+    return types.map(type => {
+      const userTasksOfType = state.tasks.filter(t => t.user_id === user.id && t.type === type).map(t => t.id);
+      const value = userLogs.filter(l => userTasksOfType.includes(l.task_id)).reduce((acc, l) => acc + (l.value || 0), 0);
+      return { name: type.toUpperCase(), value };
+    }).filter(d => d.value > 0);
+  }, [state.logs, state.tasks, user]);
+
+  const COLORS: Record<string, string> = { SQL: '#3b82f6', PYSPARK: '#f59e0b', PROJECT: '#8b5cf6', CUSTOM: '#10b981' };
+
   if (adminToken && adminData) {
     return (
       <div className="min-h-screen bg-[#0A0A0A] text-white p-8 font-sans">
@@ -575,7 +673,18 @@ export default function App() {
                           </span>
                           <span className="text-[10px] font-bold text-[#ffffff99]">ID: {l.task_id}</span>
                         </div>
-                        <div className="text-xs text-[#ffffffcc] truncate">{l.details || "No details provided"}</div>
+                        <div className="mt-2 text-xs text-[#ffffffcc]">
+                          {(() => {
+                            const parsed = parseLogDetails(l.details);
+                            if (!parsed) return <div className="truncate">No details provided</div>;
+                            return (
+                              <div className="flex flex-col gap-1 w-full">
+                                <span className="text-[10px] font-bold text-emerald-400 bg-emerald-400/10 px-2 py-0.5 rounded-md uppercase tracking-wider w-fit mb-1.5">{parsed.concept}</span>
+                                <span className="text-xs text-white/70 line-clamp-2 leading-relaxed">{parsed.summary}</span>
+                              </div>
+                            );
+                          })()}
+                        </div>
                       </div>
                       <button
                         onClick={(e) => { e.stopPropagation(); deleteLog(l.id); }}
@@ -779,6 +888,31 @@ export default function App() {
                 );
               })()}
             </div>
+            {(() => {
+              const xp = user ? calculateXP(state.logs, user.id) : 0;
+              const level = calculateLevel(xp);
+              const xpForCurrentLevel = (level - 1) * 100;
+              const progressToNextLevel = ((xp - xpForCurrentLevel) / 100) * 100;
+              const badges = user ? calculateBadges(state.logs, user.id, getStreak(user.id), state.tasks) : [];
+              return (
+                <div className="flex items-center gap-4 ml-6 pl-6 border-l border-white/10">
+                  <div className="flex items-center gap-2">
+                    <div className="font-bold text-sm text-emerald-400">LVL {level}</div>
+                    <div className="w-24 h-2 bg-[#2A2A2A] rounded-full overflow-hidden">
+                      <div className="h-full bg-emerald-400 transition-all duration-500" style={{ width: `${progressToNextLevel}%` }} />
+                    </div>
+                    <div className="text-[10px] text-white/40 font-bold ml-1">{xp} XP</div>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    {badges.map(b => (
+                      <div key={b.id} title={`${b.name}: ${b.description}`} className="p-1 px-1.5 bg-white/5 rounded-md text-[13px] cursor-help hover:bg-white/10 transition-colors">
+                        {b.icon}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
           </nav>
 
           {/* Mobile Info */}
@@ -817,371 +951,370 @@ export default function App() {
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto p-4 sm:p-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* Left Column: Tasks & Progress */}
-        <div className="lg:col-span-8 space-y-6">
-          {/* Canvas Visualization */}
-          <div className="bg-[#1A1A1A] rounded-2xl border border-white/10 p-6 shadow-sm overflow-hidden" ref={containerRef}>
-            <div className="flex flex-col md:flex-row md:items-center justify-between mb-6 gap-4">
-              <h2 className="font-serif italic text-xl">Consistency Matrix</h2>
-              <div className="flex flex-wrap items-center gap-4 text-[10px] uppercase tracking-widest font-bold text-white/40">
-                <span>Less</span>
-                <div className="flex items-center gap-1">
-                  <div className="w-2.5 h-2.5 bg-[#2A2A2A] rounded-sm"></div>
-                  <div className="w-2.5 h-2.5 bg-[#064e3b] rounded-sm"></div>
-                  <div className="w-2.5 h-2.5 bg-[#059669] rounded-sm"></div>
-                  <div className="w-2.5 h-2.5 bg-[#10b981] rounded-sm"></div>
-                  <div className="w-2.5 h-2.5 bg-[#34d399] rounded-sm"></div>
+      <main className="max-w-7xl mx-auto p-4 sm:p-6 space-y-6">
+        <div className="flex gap-4 border-b border-white/10 pb-4">
+          <button onClick={() => setActiveTab('dashboard')} className={`px-4 py-2 text-sm font-bold rounded-lg transition-colors ${activeTab === 'dashboard' ? 'bg-emerald-500/20 text-emerald-400' : 'text-white/60 hover:text-white hover:bg-white/5'}`}>Dashboard</button>
+          <button onClick={() => setActiveTab('analytics')} className={`px-4 py-2 text-sm font-bold rounded-lg transition-colors ${activeTab === 'analytics' ? 'bg-emerald-500/20 text-emerald-400' : 'text-white/60 hover:text-white hover:bg-white/5'}`}>Analytics</button>
+        </div>
+
+        {activeTab === 'dashboard' ? (
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+            {/* Left Column: Tasks & Progress */}
+            <div className="lg:col-span-8 space-y-6">
+              {/* Canvas Visualization */}
+              <div className="bg-[#1A1A1A] rounded-2xl border border-white/10 p-6 shadow-sm overflow-hidden" ref={containerRef}>
+                <div className="flex flex-col md:flex-row md:items-center justify-between mb-6 gap-4">
+                  <h2 className="font-serif italic text-xl">Consistency Matrix</h2>
+                  <div className="flex flex-wrap items-center gap-4 text-[10px] uppercase tracking-widest font-bold text-white/40">
+                    <span>Less</span>
+                    <div className="flex items-center gap-1">
+                      <div className="w-2.5 h-2.5 bg-[#2A2A2A] rounded-sm"></div>
+                      <div className="w-2.5 h-2.5 bg-[#064e3b] rounded-sm"></div>
+                      <div className="w-2.5 h-2.5 bg-[#059669] rounded-sm"></div>
+                      <div className="w-2.5 h-2.5 bg-[#10b981] rounded-sm"></div>
+                      <div className="w-2.5 h-2.5 bg-[#34d399] rounded-sm"></div>
+                    </div>
+                    <span>More</span>
+                  </div>
                 </div>
-                <span>More</span>
-              </div>
-            </div>
 
-            <div className="overflow-x-auto pb-4 custom-scrollbar no-scrollbar">
-              <Stage
-                width={Math.max(canvasSize.width - 48, (lastDays.length / 7) * (window.innerWidth < 768 ? 22 : 14) + 60)}
-                height={window.innerWidth < 768 ? 200 : 150}
-              >
-                <Layer>
-                  {/* Day Labels */}
-                  {['Mon', 'Wed', 'Fri'].map((day, i) => (
-                    <Text
-                      key={day}
-                      text={day}
-                      x={window.innerWidth < 768 ? 5 : 0}
-                      y={window.innerWidth < 768 ? 42 + (i * 2 + 1) * 22 : 28 + (i * 2 + 1) * 14}
-                      fontSize={window.innerWidth < 768 ? 10 : 9}
-                      fontFamily="Inter"
-                      fill="#FFFFFF"
-                      opacity={0.3}
-                    />
-                  ))}
+                <div ref={heatmapScrollRef} className="overflow-x-auto pb-4 custom-scrollbar no-scrollbar flex gap-[3px] scroll-smooth">
+                  {/* Day Labels Column */}
+                  <div className="flex flex-col gap-[3px] pr-2 text-[9px] text-white/30 font-bold pt-4">
+                    <span className="opacity-0 h-[10px] flex items-center leading-none">Sun</span>
+                    <span className="h-[10px] flex items-center leading-none">Mon</span>
+                    <span className="opacity-0 h-[10px] flex items-center leading-none">Tue</span>
+                    <span className="h-[10px] flex items-center leading-none">Wed</span>
+                    <span className="opacity-0 h-[10px] flex items-center leading-none">Thu</span>
+                    <span className="h-[10px] flex items-center leading-none">Fri</span>
+                    <span className="opacity-0 h-[10px] flex items-center leading-none">Sat</span>
+                  </div>
 
-                  {/* Heatmap Grid */}
-                  {lastDays.map((date, dayIdx) => {
-                    const col = Math.floor(dayIdx / 7);
-                    const row = dayIdx % 7;
-                    const isMobile = window.innerWidth < 768;
-                    const squareSize = isMobile ? 18 : 11;
-                    const pitch = isMobile ? 22 : 14;
-                    const startX = isMobile ? 40 : 30;
-                    const startY = isMobile ? 35 : 25;
+                  <div className="flex gap-[3px] pt-4">
+                    {/* Group days into weeks */}
+                    {Array.from({ length: Math.ceil(lastDays.length / 7) }).map((_, colIdx) => {
+                      const weekDays = lastDays.slice(colIdx * 7, colIdx * 7 + 7);
 
-                    const x = startX + col * pitch;
-                    const y = startY + row * pitch;
+                      // Check if a new month starts in this week (day <= 7) to render a top label
+                      const firstDay = weekDays[0];
+                      let monthLabel = null;
+                      if (firstDay) {
+                        const d = new Date(firstDay);
+                        if (d.getDate() <= 7) {
+                          const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+                          monthLabel = monthNames[d.getMonth()];
+                        }
+                      }
 
-                    const userTasksForHeatmap = state.tasks.filter(t => t.user_id === user?.id);
-                    const dayLogs = state.logs.filter(l => l.user_id === user?.id && l.date === date);
-
-                    let intensity = 0; // 0 to 4
-                    if (userTasksForHeatmap.length > 0) {
-                      const completedCount = userTasksForHeatmap.filter(t => {
-                        const log = dayLogs.find(l => l.task_id === t.id);
-                        return (log?.value || 0) >= t.target_daily;
-                      }).length;
-
-                      const ratio = completedCount / userTasksForHeatmap.length;
-                      if (completedCount === 0 && dayLogs.some(l => l.value > 0)) intensity = 1;
-                      else if (ratio > 0 && ratio < 0.5) intensity = 2;
-                      else if (ratio >= 0.5 && ratio < 1) intensity = 3;
-                      else if (ratio === 1) intensity = 4;
-                    }
-
-                    const hasBonus = userTasksForHeatmap.some(t => {
-                      const log = dayLogs.find(l => l.task_id === t.id);
-                      return log && log.value >= t.target_daily * 5;
-                    });
-
-                    const colors = ['#2A2A2A', '#064e3b', '#059669', '#10b981', '#34d399'];
-                    const fill = hasBonus ? '#fbbf24' : colors[intensity]; // Use amber/gold for bonus
-
-                    // Month Labels
-                    const d = new Date(date);
-                    if (row === 0 && d.getDate() <= 7) {
-                      const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
                       return (
-                        <Group key={date}>
-                          <Text
-                            text={monthNames[d.getMonth()]}
-                            x={x}
-                            y={isMobile ? 10 : 5}
-                            fontSize={isMobile ? 11 : 9}
-                            fontFamily="Inter"
-                            fill="#FFFFFF"
-                            opacity={0.4}
-                            fontStyle="bold"
-                          />
-                          <Rect
-                            x={x}
-                            y={y}
-                            width={squareSize}
-                            height={squareSize}
-                            fill={fill}
-                            cornerRadius={2}
-                            stroke={date === selectedDate ? '#FFFFFF' : 'transparent'}
-                            strokeWidth={1}
-                            onClick={() => setSelectedDate(date)}
-                          />
-                        </Group>
+                        <div key={colIdx} className="relative flex flex-col gap-[3px]">
+                          {monthLabel && (
+                            <span className="absolute -top-5 left-0 text-[10px] text-white/40 font-bold whitespace-nowrap">
+                              {monthLabel}
+                            </span>
+                          )}
+                          {weekDays.map(date => {
+                            const data = activityMap[date] || { intensity: 0, completedCount: 0, totalMandatory: 0, hasBonus: false };
+                            const colors = ['bg-[#2A2A2A]', 'bg-[#064e3b]', 'bg-[#059669]', 'bg-[#10b981]', 'bg-[#34d399]'];
+                            const bgClass = data.hasBonus ? 'bg-[#fbbf24]' : colors[data.intensity];
+                            return (
+                              <button
+                                key={date}
+                                onClick={() => setSelectedDate(date)}
+                                title={data.totalMandatory > 0 ? `${data.completedCount} / ${data.totalMandatory} tasks on ${date}${data.hasBonus ? ' (Bonus!)' : ''}` : (data.intensity > 0 ? `Activity on ${date}` : `No activity on ${date}`)}
+                                className={`w-[10px] h-[10px] rounded-[2px] transition-all duration-200 hover:scale-125 hover:ring-1 hover:ring-white/50 border ${date === selectedDate ? 'border-white' : 'border-black/10'} ${bgClass}`}
+                                aria-label={`Activity on ${date}`}
+                              />
+                            );
+                          })}
+                        </div>
                       );
-                    }
+                    })}
+                  </div>
+                </div>
+              </div>
+
+              {/* Date Selector & Checklist */}
+              <div className="space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                  <h2 className="text-xl font-bold flex items-center gap-3">
+                    <ChevronRight className="w-5 h-5 text-emerald-400" />
+                    <span className="truncate">Tasks for {selectedDate === today ? "Today" : selectedDate}</span>
+                  </h2>
+                  <div className="flex gap-2 overflow-x-auto pb-2 sm:pb-0 custom-scrollbar no-scrollbar">
+                    {lastDays.slice(-7).map(date => (
+                      <button
+                        key={date}
+                        onClick={() => setSelectedDate(date)}
+                        className={`px-4 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all whitespace-nowrap ${selectedDate === date ? "bg-white text-black" : "bg-white/5 text-white/40 hover:bg-white/10"
+                          }`}
+                      >
+                        {date === today ? "Today" : date.split('-').slice(1).join('/')}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {userTasks.map(task => {
+                    const log = state.logs.find(l => l.user_id === user?.id && l.task_id === task.id && l.date === selectedDate);
+                    const value = log ? log.value : 0;
+                    const progress = Math.min(100, (value / task.target_daily) * 100);
+                    const isUltraBonus = value >= task.target_daily * 5;
 
                     return (
-                      <Rect
-                        key={date}
-                        x={x}
-                        y={y}
-                        width={squareSize}
-                        height={squareSize}
-                        fill={fill}
-                        cornerRadius={2}
-                        stroke={date === selectedDate ? '#FFFFFF' : 'transparent'}
-                        strokeWidth={1}
-                        onClick={() => setSelectedDate(date)}
-                      />
+                      <div
+                        key={task.id}
+                        className={`bg-[#1A1A1A] p-6 rounded-2xl border border-white/5 relative overflow-hidden group transition-all hover:border-white/20 ${isUltraBonus ? "ring-2 ring-yellow-500/50 border-yellow-500/50 shadow-[0_0_20px_rgba(245,158,11,0.2)]" : ""
+                          }`}
+                      >
+                        {isUltraBonus && (
+                          <motion.div
+                            initial={{ scale: 0.8, opacity: 0 }}
+                            animate={{ scale: 1, opacity: 1 }}
+                            className="absolute -top-1 -right-1 bg-gradient-to-r from-yellow-400 via-orange-500 to-red-500 px-3 py-1 rounded-bl-xl z-10 flex items-center gap-1 shadow-lg"
+                          >
+                            <Zap className="w-3 h-3 text-white fill-white" />
+                            <span className="text-[9px] font-black italic tracking-tighter text-white uppercase">5X Ultra Bonus</span>
+                          </motion.div>
+                        )}
+                        <div className="flex justify-between items-start mb-4">
+                          <div className="flex gap-2">
+                            <div className="p-3 bg-[#2A2A2A] rounded-xl group-hover:bg-white group-hover:text-black transition-all">
+                              {task.type === 'sql' && <Database className="w-5 h-5" />}
+                              {task.type === 'pyspark' && <Terminal className="w-5 h-5" />}
+                              {task.type === 'project' && <Briefcase className="w-5 h-5" />}
+                              {task.type === 'custom' && <Settings2 className="w-5 h-5" />}
+                            </div>
+                            <button
+                              onClick={() => deleteTask(task.id)}
+                              className="p-3 bg-[#2A2A2A] rounded-xl text-red-400 hover:bg-red-400 hover:text-white transition-all opacity-0 group-hover:opacity-100"
+                              title="Delete Task"
+                            >
+                              <Trash2 className="w-5 h-5" />
+                            </button>
+                          </div>
+                          <div className="text-right">
+                            <span className="text-2xl font-bold font-mono">{value}</span>
+                            <span className="text-white/30 text-xs font-bold"> / {task.target_daily}</span>
+                          </div>
+                        </div>
+
+                        <h3 className="font-bold mb-1">{task.title}</h3>
+                        <p className="text-xs text-white/40 font-medium uppercase tracking-wider mb-4">Daily Target</p>
+
+                        <div className="flex items-center gap-2">
+                          <motion.button
+                            whileHover={{ scale: 1.05, backgroundColor: 'rgba(255,255,255,0.1)' }}
+                            whileTap={{ scale: 0.95 }}
+                            onClick={() => updateLog(task.id, selectedDate, Math.max(0, value - 1))}
+                            className="flex-1 py-2 bg-[#2A2A2A] rounded-lg text-sm font-bold transition-colors"
+                          >
+                            -
+                          </motion.button>
+                          <motion.button
+                            whileHover={{ scale: 1.02, backgroundColor: '#f3f4f6', boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.1)' }}
+                            whileTap={{ scale: 0.98 }}
+                            onClick={() => {
+                              const existingLog = state.logs.find(l => l.user_id === user?.id && l.task_id === task.id && l.date === selectedDate);
+                              setActiveLogTask({ task, date: selectedDate });
+                              const parsed = parseLogDetails(existingLog?.details);
+                              setLogConcept(parsed?.concept || (existingLog?.details ? 'Legacy Log' : ''));
+                              setLogSummary(parsed?.summary || existingLog?.details || '');
+                              setLogValue(existingLog ? existingLog.value : 1);
+                            }}
+                            className="flex-[2] py-2 bg-white text-black rounded-lg text-sm font-bold transition-all flex items-center justify-center gap-2"
+                          >
+                            <Plus className="w-4 h-4" /> {log ? 'Update Progress' : 'Log Progress'}
+                          </motion.button>
+                        </div>
+
+                        <div className="mt-4 h-1 w-full bg-[#2A2A2A] rounded-full overflow-hidden">
+                          <div
+                            className="h-full bg-emerald-500 transition-all duration-500"
+                            style={{ width: `${progress}%` }}
+                          />
+                        </div>
+
+                        {log?.details && (
+                          <div className="mt-4 p-3 bg-[#2A2A2A] rounded-lg text-[10px] text-white/60 font-medium flex items-start justify-between gap-2 group/details">
+                            <div className="flex items-start gap-2 w-full">
+                              <Info className="w-3 h-3 mt-0.5 shrink-0" />
+                              {(() => {
+                                const parsed = parseLogDetails(log.details);
+                                if (!parsed) return <div className="break-all">{log.details}</div>;
+                                return (
+                                  <div className="flex flex-col gap-1 flex-1">
+                                    <span className="text-[10px] font-bold text-emerald-400 bg-emerald-400/10 px-2 py-0.5 rounded-md uppercase tracking-wider w-fit mb-1.5">{parsed.concept}</span>
+                                    <span className="text-xs text-white/70 line-clamp-2 leading-relaxed">{parsed.summary}</span>
+                                  </div>
+                                );
+                              })()}
+                            </div>
+                            <button
+                              onClick={() => {
+                                setActiveLogTask({ task, date: selectedDate });
+                                const parsed = parseLogDetails(log.details);
+                                setLogConcept(parsed?.concept || (log.details ? 'Legacy Log' : ''));
+                                setLogSummary(parsed?.summary || log.details || '');
+                                setLogValue(log.value);
+                              }}
+                              className="opacity-0 group-hover/details:opacity-100 p-1 hover:bg-white/10 rounded transition-all shrink-0"
+                            >
+                              <Edit2 className="w-3 h-3" />
+                            </button>
+                          </div>
+                        )}
+                      </div>
                     );
                   })}
-                </Layer>
-              </Stage>
-            </div>
-          </div>
 
-          {/* Date Selector & Checklist */}
-          <div className="space-y-4">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-              <h2 className="text-xl font-bold flex items-center gap-3">
-                <ChevronRight className="w-5 h-5 text-emerald-400" />
-                <span className="truncate">Tasks for {selectedDate === today ? "Today" : selectedDate}</span>
-              </h2>
-              <div className="flex gap-2 overflow-x-auto pb-2 sm:pb-0 custom-scrollbar no-scrollbar">
-                {lastDays.slice(-7).map(date => (
                   <button
-                    key={date}
-                    onClick={() => setSelectedDate(date)}
-                    className={`px-4 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all whitespace-nowrap ${selectedDate === date ? "bg-white text-black" : "bg-white/5 text-white/40 hover:bg-white/10"
-                      }`}
+                    onClick={() => setIsAddTaskModalOpen(true)}
+                    className="border-2 border-dashed border-white/10 rounded-2xl flex flex-col items-center justify-center p-6 text-white/30 hover:text-white hover:border-white/30 transition-all gap-2 group"
                   >
-                    {date === today ? "Today" : date.split('-').slice(1).join('/')}
+                    <motion.div
+                      whileHover={{ scale: 1.2, rotate: 90 }}
+                      transition={{ type: "spring", stiffness: 300 }}
+                    >
+                      <Plus className="w-8 h-8" />
+                    </motion.div>
+                    <span className="font-bold text-sm uppercase tracking-widest">Add Custom Goal</span>
                   </button>
-                ))}
+                </div>
               </div>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {userTasks.map(task => {
-                const log = state.logs.find(l => l.user_id === user?.id && l.task_id === task.id && l.date === selectedDate);
-                const value = log ? log.value : 0;
-                const progress = Math.min(100, (value / task.target_daily) * 100);
-                const isUltraBonus = value >= task.target_daily * 5;
+            {/* Right Column: Collaboration & Friends */}
+            <div className="lg:col-span-4 space-y-6">
+              <div className="bg-black dark:bg-[#1A1A1A] text-white rounded-2xl p-6 shadow-xl border border-white/5">
+                <div className="flex items-center justify-between mb-6">
+                  <h2 className="font-serif italic text-xl">Collaborators</h2>
+                  <Share2 className="w-4 h-4 opacity-50 cursor-pointer" />
+                </div>
 
-                return (
-                  <div
-                    key={task.id}
-                    className={`bg-[#1A1A1A] p-6 rounded-2xl border border-white/5 relative overflow-hidden group transition-all hover:border-white/20 ${isUltraBonus ? "ring-2 ring-yellow-500/50 border-yellow-500/50 shadow-[0_0_20px_rgba(245,158,11,0.2)]" : ""
-                      }`}
-                  >
-                    {isUltraBonus && (
-                      <motion.div
-                        initial={{ scale: 0.8, opacity: 0 }}
-                        animate={{ scale: 1, opacity: 1 }}
-                        className="absolute -top-1 -right-1 bg-gradient-to-r from-yellow-400 via-orange-500 to-red-500 px-3 py-1 rounded-bl-xl z-10 flex items-center gap-1 shadow-lg"
-                      >
-                        <Zap className="w-3 h-3 text-white fill-white" />
-                        <span className="text-[9px] font-black italic tracking-tighter text-white uppercase">5X Ultra Bonus</span>
-                      </motion.div>
-                    )}
-                    <div className="flex justify-between items-start mb-4">
-                      <div className="flex gap-2">
-                        <div className="p-3 bg-[#2A2A2A] rounded-xl group-hover:bg-white group-hover:text-black transition-all">
-                          {task.type === 'sql' && <Database className="w-5 h-5" />}
-                          {task.type === 'pyspark' && <Terminal className="w-5 h-5" />}
-                          {task.type === 'project' && <Briefcase className="w-5 h-5" />}
-                          {task.type === 'custom' && <Settings2 className="w-5 h-5" />}
+                <div className="space-y-4">
+                  {state.users.map(u => (
+                    <div key={u.id} className="flex items-center justify-between p-3 rounded-xl bg-white/5 border border-white/10">
+                      <div className="flex items-center gap-3">
+                        <div className="w-8 h-8 rounded-full bg-gradient-to-br from-emerald-400 to-blue-500 flex items-center justify-center text-[10px] font-bold">
+                          {u.name.substring(0, 2).toUpperCase()}
                         </div>
-                        <button
-                          onClick={() => deleteTask(task.id)}
-                          className="p-3 bg-[#2A2A2A] rounded-xl text-red-400 hover:bg-red-400 hover:text-white transition-all opacity-0 group-hover:opacity-100"
-                          title="Delete Task"
-                        >
-                          <Trash2 className="w-5 h-5" />
-                        </button>
-                      </div>
-                      <div className="text-right">
-                        <span className="text-2xl font-bold font-mono">{value}</span>
-                        <span className="text-white/30 text-xs font-bold"> / {task.target_daily}</span>
-                      </div>
-                    </div>
-
-                    <h3 className="font-bold mb-1">{task.title}</h3>
-                    <p className="text-xs text-white/40 font-medium uppercase tracking-wider mb-4">Daily Target</p>
-
-                    <div className="flex items-center gap-2">
-                      <motion.button
-                        whileHover={{ scale: 1.05, backgroundColor: 'rgba(255,255,255,0.1)' }}
-                        whileTap={{ scale: 0.95 }}
-                        onClick={() => updateLog(task.id, selectedDate, Math.max(0, value - 1))}
-                        className="flex-1 py-2 bg-[#2A2A2A] rounded-lg text-sm font-bold transition-colors"
-                      >
-                        -
-                      </motion.button>
-                      <motion.button
-                        whileHover={{ scale: 1.02, backgroundColor: '#f3f4f6', boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.1)' }}
-                        whileTap={{ scale: 0.98 }}
-                        onClick={() => {
-                          const existingLog = state.logs.find(l => l.user_id === user?.id && l.task_id === task.id && l.date === selectedDate);
-                          setActiveLogTask({ task, date: selectedDate });
-                          setLogDetails(existingLog?.details || '');
-                          setLogValue(existingLog ? existingLog.value : 1);
-                        }}
-                        className="flex-[2] py-2 bg-white text-black rounded-lg text-sm font-bold transition-all flex items-center justify-center gap-2"
-                      >
-                        <Plus className="w-4 h-4" /> {log ? 'Update Progress' : 'Log Progress'}
-                      </motion.button>
-                    </div>
-
-                    <div className="mt-4 h-1 w-full bg-[#2A2A2A] rounded-full overflow-hidden">
-                      <div
-                        className="h-full bg-emerald-500 transition-all duration-500"
-                        style={{ width: `${progress}%` }}
-                      />
-                    </div>
-
-                    {log?.details && (
-                      <div className="mt-4 p-3 bg-[#2A2A2A] rounded-lg text-[10px] text-white/60 font-medium flex items-start justify-between gap-2 group/details">
-                        <div className="flex items-start gap-2">
-                          <Info className="w-3 h-3 mt-0.5 shrink-0" />
-                          <div className="break-all">{log.details}</div>
+                        <div>
+                          <div className="text-sm font-bold">{u.name} {u.id === user?.id && "(You)"}</div>
+                          <div className="text-[10px] text-white/40 uppercase tracking-widest font-bold">
+                            {getStreak(u.id)} Day Streak
+                          </div>
                         </div>
-                        <button
-                          onClick={() => {
-                            setActiveLogTask({ task, date: selectedDate });
-                            setLogDetails(log.details || '');
-                            setLogValue(log.value);
-                          }}
-                          className="opacity-0 group-hover/details:opacity-100 p-1 hover:bg-white/10 rounded transition-all"
-                        >
-                          <Edit2 className="w-3 h-3" />
-                        </button>
                       </div>
-                    )}
-                  </div>
-                );
-              })}
+                      <div className="flex items-center gap-2">
+                        {(() => {
+                          const userLogsToday = state.logs.filter(l => l.user_id === u.id && l.date === selectedDate);
+                          const userTasksCount = state.tasks.filter(t => t.user_id === u.id);
+                          const hasBonusToday = userTasksCount.some(t => {
+                            const log = userLogsToday.find(l => l.task_id === t.id);
+                            return log && log.value >= t.target_daily * 5;
+                          });
 
-              <button
-                onClick={() => setIsAddTaskModalOpen(true)}
-                className="border-2 border-dashed border-white/10 rounded-2xl flex flex-col items-center justify-center p-6 text-white/30 hover:text-white hover:border-white/30 transition-all gap-2 group"
-              >
-                <motion.div
-                  whileHover={{ scale: 1.2, rotate: 90 }}
-                  transition={{ type: "spring", stiffness: 300 }}
-                >
-                  <Plus className="w-8 h-8" />
-                </motion.div>
-                <span className="font-bold text-sm uppercase tracking-widest">Add Custom Goal</span>
-              </button>
-            </div>
-          </div>
-        </div>
-
-        {/* Right Column: Collaboration & Friends */}
-        <div className="lg:col-span-4 space-y-6">
-          <div className="bg-black dark:bg-[#1A1A1A] text-white rounded-2xl p-6 shadow-xl border border-white/5">
-            <div className="flex items-center justify-between mb-6">
-              <h2 className="font-serif italic text-xl">Collaborators</h2>
-              <Share2 className="w-4 h-4 opacity-50 cursor-pointer" />
-            </div>
-
-            <div className="space-y-4">
-              {state.users.map(u => (
-                <div key={u.id} className="flex items-center justify-between p-3 rounded-xl bg-white/5 border border-white/10">
-                  <div className="flex items-center gap-3">
-                    <div className="w-8 h-8 rounded-full bg-gradient-to-br from-emerald-400 to-blue-500 flex items-center justify-center text-[10px] font-bold">
-                      {u.name.substring(0, 2).toUpperCase()}
-                    </div>
-                    <div>
-                      <div className="text-sm font-bold">{u.name} {u.id === user?.id && "(You)"}</div>
-                      <div className="text-[10px] text-white/40 uppercase tracking-widest font-bold">
-                        {getStreak(u.id)} Day Streak
+                          return (
+                            <>
+                              {getStreak(u.id) > 0 && (
+                                <div className="flex items-center">
+                                  <Flame className={`w-4 h-4 ${hasBonusToday ? "text-yellow-400 animate-pulse" : "text-orange-500"}`} />
+                                  {hasBonusToday && <span className="text-[10px] font-bold text-yellow-400 ml-0.5">+2</span>}
+                                </div>
+                              )}
+                            </>
+                          );
+                        })()}
                       </div>
                     </div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {(() => {
-                      const userLogsToday = state.logs.filter(l => l.user_id === u.id && l.date === selectedDate);
-                      const userTasksCount = state.tasks.filter(t => t.user_id === u.id);
-                      const hasBonusToday = userTasksCount.some(t => {
-                        const log = userLogsToday.find(l => l.task_id === t.id);
-                        return log && log.value >= t.target_daily * 5;
-                      });
+                  ))}
+                </div>
 
+                <div className="mt-8 p-4 bg-white/5 rounded-xl border border-white/5">
+                  <p className="text-xs text-white/60 leading-relaxed italic">
+                    "Consistency is what transforms average into excellence. Keep pushing each other."
+                  </p>
+                </div>
+              </div>
+
+              <div className="bg-white dark:bg-[#1A1A1A] rounded-2xl border border-black/10 dark:border-white/10 p-6 shadow-sm">
+                <div className="flex items-center justify-between mb-6">
+                  <h2 className="font-bold flex items-center gap-2">
+                    <Trophy className="w-5 h-5 text-yellow-500" />
+                    Global Leaderboard
+                  </h2>
+                  <div className="text-[10px] font-bold text-white/30 uppercase tracking-widest">Top 5</div>
+                </div>
+
+                <div className="space-y-4">
+                  {leaderboard.length > 0 ? (
+                    leaderboard.map((entry, i) => {
+                      const league = getLeagueInfo(i);
                       return (
-                        <>
-                          {getStreak(u.id) > 0 && (
-                            <div className="flex items-center">
-                              <Flame className={`w-4 h-4 ${hasBonusToday ? "text-yellow-400 animate-pulse" : "text-orange-500"}`} />
-                              {hasBonusToday && <span className="text-[10px] font-bold text-yellow-400 ml-0.5">+2</span>}
+                        <div key={`${entry.name}-${i}`} className="flex items-center justify-between group">
+                          <div className="flex items-center gap-3">
+                            <div className="text-2xl">{league.name.split(' ')[0]}</div>
+                            <div>
+                              <div className="text-sm font-bold">{entry.name}</div>
+                              <div className="text-[10px] text-white/40 uppercase tracking-widest font-bold mt-0.5">
+                                Room: {entry.roomId} • XP: {(entry.totalVolume || 0) * 10}
+                              </div>
+                              <div className={`text-[10px] font-bold mt-1 ${league.color}`}>{league.name.split(' ').slice(1).join(' ')}</div>
                             </div>
-                          )}
-                        </>
-                      );
-                    })()}
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            <div className="mt-8 p-4 bg-white/5 rounded-xl border border-white/5">
-              <p className="text-xs text-white/60 leading-relaxed italic">
-                "Consistency is what transforms average into excellence. Keep pushing each other."
-              </p>
-            </div>
-          </div>
-
-          <div className="bg-white dark:bg-[#1A1A1A] rounded-2xl border border-black/10 dark:border-white/10 p-6 shadow-sm">
-            <div className="flex items-center justify-between mb-6">
-              <h2 className="font-bold flex items-center gap-2">
-                <Trophy className="w-5 h-5 text-yellow-500" />
-                Global Leaderboard
-              </h2>
-              <div className="text-[10px] font-bold text-white/30 uppercase tracking-widest">Top 5</div>
-            </div>
-
-            <div className="space-y-4">
-              {leaderboard.length > 0 ? (
-                leaderboard.map((entry, i) => (
-                  <div key={`${entry.name}-${i}`} className="flex items-center justify-between group">
-                    <div className="flex items-center gap-3">
-                      <div className={cn(
-                        "w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold",
-                        i === 0 ? "bg-yellow-500 text-black" :
-                          i === 1 ? "bg-slate-300 text-black" :
-                            i === 2 ? "bg-amber-600 text-white" : "bg-white/10 text-white/60"
-                      )}>
-                        {i + 1}
-                      </div>
-                      <div>
-                        <div className="text-sm font-bold">{entry.name}</div>
-                        <div className="text-[10px] text-white/40 uppercase tracking-widest font-bold">
-                          Room: {entry.roomId}
+                          </div>
+                          <div className="flex items-center gap-1.5 bg-emerald-500/10 px-2 py-1 rounded-lg">
+                            <Flame className="w-3 h-3 text-emerald-500" />
+                            <span className="text-sm font-bold text-emerald-500">{entry.streak}</span>
+                          </div>
                         </div>
-                      </div>
+                      )
+                    })
+                  ) : (
+                    <div className="text-center py-8 text-white/20">
+                      <Medal className="w-8 h-8 mx-auto mb-2 opacity-20" />
+                      <p className="text-xs font-bold uppercase tracking-widest">No streaks yet</p>
                     </div>
-                    <div className="flex items-center gap-1.5 bg-emerald-500/10 px-2 py-1 rounded-lg">
-                      <Flame className="w-3 h-3 text-emerald-500" />
-                      <span className="text-sm font-bold text-emerald-500">{entry.streak}</span>
-                    </div>
-                  </div>
-                ))
-              ) : (
-                <div className="text-center py-8 text-white/20">
-                  <Medal className="w-8 h-8 mx-auto mb-2 opacity-20" />
-                  <p className="text-xs font-bold uppercase tracking-widest">No streaks yet</p>
+                  )}
                 </div>
-              )}
+              </div>
             </div>
           </div>
-        </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="bg-[#1A1A1A] p-6 rounded-2xl border border-white/10 h-[400px] flex flex-col">
+              <h2 className="text-lg font-bold mb-6 flex items-center gap-2">Productivity by Day</h2>
+              <div className="flex-1 min-h-0">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={aggregatedData}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#ffffff1a" vertical={false} />
+                    <XAxis dataKey="name" stroke="#ffffff66" tick={{ fill: '#ffffff66', fontSize: 12 }} />
+                    <YAxis stroke="#ffffff66" tick={{ fill: '#ffffff66', fontSize: 12 }} />
+                    <RechartsTooltip cursor={{ fill: '#ffffff0a' }} contentStyle={{ backgroundColor: '#2A2A2A', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px' }} itemStyle={{ color: '#fff' }} />
+                    <Bar dataKey="volume" fill="#10b981" radius={[4, 4, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+            <div className="bg-[#1A1A1A] p-6 rounded-2xl border border-white/10 h-[400px] flex flex-col">
+              <h2 className="text-lg font-bold mb-6 flex items-center gap-2">Focus Distribution</h2>
+              <div className="flex-1 min-h-0">
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie data={pieData} cx="50%" cy="50%" innerRadius={60} outerRadius={80} paddingAngle={5} dataKey="value">
+                      {pieData.map((entry: any, index: number) => (
+                        <Cell key={`cell-${index}`} fill={COLORS[entry.name] || '#10b981'} />
+                      ))}
+                    </Pie>
+                    <RechartsTooltip contentStyle={{ backgroundColor: '#2A2A2A', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px' }} itemStyle={{ color: '#fff' }} />
+                    <Legend wrapperStyle={{ fontSize: '12px', marginTop: '10px' }} />
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          </div>
+        )}
       </main>
 
       {/* Add Task Modal */}
@@ -1284,15 +1417,28 @@ export default function App() {
                   </div>
                 </div>
 
-                <div>
-                  <label className="block text-xs font-semibold uppercase tracking-wider text-black/40 dark:text-white/40 mb-2">Details (Question, Link, or Topic)</label>
-                  <textarea
-                    autoFocus
-                    value={logDetails}
-                    onChange={(e) => setLogDetails(e.target.value)}
-                    className="w-full px-4 py-3 bg-[#F5F5F0] dark:bg-[#2A2A2A] border-none rounded-xl focus:ring-2 focus:ring-black dark:focus:ring-white outline-none transition-all dark:text-white min-h-[100px] resize-none"
-                    placeholder="e.g. LeetCode 185. Department Top Three Salaries"
-                  />
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-xs font-semibold uppercase tracking-wider text-black/40 dark:text-white/40 mb-2">Core Concept (What did you focus on?)</label>
+                    <input
+                      type="text"
+                      autoFocus
+                      maxLength={50}
+                      value={logConcept}
+                      onChange={(e) => setLogConcept(e.target.value)}
+                      className="w-full px-4 py-3 bg-[#F5F5F0] dark:bg-[#2A2A2A] border-none rounded-xl focus:ring-2 focus:ring-black dark:focus:ring-white outline-none transition-all dark:text-white"
+                      placeholder="Topic related to the task"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold uppercase tracking-wider text-black/40 dark:text-white/40 mb-2">Key Takeaway or Biggest Blocker</label>
+                    <textarea
+                      value={logSummary}
+                      onChange={(e) => setLogSummary(e.target.value)}
+                      className="w-full px-4 py-3 bg-[#F5F5F0] dark:bg-[#2A2A2A] border-none rounded-xl focus:ring-2 focus:ring-black dark:focus:ring-white outline-none transition-all dark:text-white min-h-[80px] resize-none"
+                      placeholder="Explain it simply: What was the hardest part? What did you learn?"
+                    />
+                  </div>
                 </div>
 
                 <div className="flex items-center gap-3 pt-2">
@@ -1304,7 +1450,7 @@ export default function App() {
                   </button>
                   <button
                     onClick={handleLogSubmit}
-                    disabled={!logDetails.trim()}
+                    disabled={!logConcept.trim() || !logSummary.trim()}
                     className="flex-[2] py-3 bg-black dark:bg-white text-white dark:text-black rounded-xl font-bold hover:bg-black/90 dark:hover:bg-white/90 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     Confirm & Log
