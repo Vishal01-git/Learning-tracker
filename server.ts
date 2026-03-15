@@ -9,6 +9,7 @@ import { fileURLToPath } from "url";
 import jwt from "jsonwebtoken";
 import rateLimit from "express-rate-limit";
 import { z } from "zod";
+import webpush from "web-push";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -23,6 +24,18 @@ const JWT_SECRET = process.env.JWT_SECRET || (() => {
 })();
 
 const ADMIN_JWT_SECRET = process.env.ADMIN_JWT_SECRET || JWT_SECRET + "_admin";
+
+// ─── Web Push (VAPID) ──────────────────────────────────────────────────────────
+const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || "";
+const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || "";
+const VAPID_SUBJECT = process.env.VAPID_SUBJECT || "mailto:admin@example.com";
+
+if (VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY) {
+  webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
+  console.log("✅ VAPID push notifications configured");
+} else {
+  console.warn("⚠️  VAPID keys not set — push notifications disabled. Add VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY to .env");
+}
 
 // ─── DB Pool ───────────────────────────────────────────────────────────────────
 const pool = new Pool({
@@ -72,6 +85,14 @@ const AdminLoginSchema = z.object({
   password: z.string().min(1).max(200),
 });
 
+const PushSubscribeSchema = z.object({
+  endpoint: z.string().url().max(500),
+  keys: z.object({
+    p256dh: z.string().min(1).max(200),
+    auth: z.string().min(1).max(100),
+  }),
+});
+
 // ─── DB Init ──────────────────────────────────────────────────────────────────
 const initDb = async () => {
   const client = await pool.connect();
@@ -117,6 +138,16 @@ const initDb = async () => {
         used_on TEXT NOT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         UNIQUE (user_id, used_on)
+      );
+
+      CREATE TABLE IF NOT EXISTS push_subscriptions (
+        id SERIAL PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        endpoint TEXT NOT NULL,
+        p256dh TEXT NOT NULL,
+        auth TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE (user_id, endpoint)
       );
 
       DROP TABLE IF EXISTS task_mandatory_settings;
@@ -182,6 +213,12 @@ const adminLoginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 5,
   message: { error: "Too many login attempts." },
+});
+
+const pushLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 10,
+  message: { error: "Too many requests." },
 });
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
@@ -407,6 +444,124 @@ async function startServer() {
       res.json({ exportedAt: new Date().toISOString(), user, tasks, logs });
     } catch (err) {
       res.status(500).json({ error: "Export failed" });
+    }
+  });
+
+  // ── Push: get VAPID public key ────────────────────────────────────────────────
+  app.get("/api/push/vapid-public-key", (req, res) => {
+    if (!VAPID_PUBLIC_KEY) {
+      return res.status(503).json({ error: "Push notifications not configured on this server." });
+    }
+    res.json({ publicKey: VAPID_PUBLIC_KEY });
+  });
+
+  // ── Push: save subscription ───────────────────────────────────────────────────
+  app.post("/api/push/subscribe", pushLimiter, async (req, res) => {
+    const token = req.headers.authorization?.replace("Bearer ", "");
+    if (!token) return res.status(401).json({ error: "Unauthorized" });
+    const auth = verifyUserToken(token);
+    if (!auth) return res.status(401).json({ error: "Invalid token" });
+
+    const parsed = PushSubscribeSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: parsed.error.issues[0]?.message || "Invalid subscription" });
+    }
+
+    const { endpoint, keys } = parsed.data;
+    try {
+      await pool.query(
+        `INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (user_id, endpoint) DO UPDATE SET p256dh = $3, auth = $4`,
+        [auth.userId, endpoint, keys.p256dh, keys.auth]
+      );
+      res.json({ success: true });
+    } catch (err) {
+      console.error("Push subscribe error:", err);
+      res.status(500).json({ error: "Failed to save subscription" });
+    }
+  });
+
+  // ── Push: unsubscribe ─────────────────────────────────────────────────────────
+  app.delete("/api/push/subscribe", pushLimiter, async (req, res) => {
+    const token = req.headers.authorization?.replace("Bearer ", "");
+    if (!token) return res.status(401).json({ error: "Unauthorized" });
+    const auth = verifyUserToken(token);
+    if (!auth) return res.status(401).json({ error: "Invalid token" });
+
+    const schema = z.object({ endpoint: z.string().url().max(500) });
+    const parsed = schema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: "Invalid endpoint" });
+
+    try {
+      await pool.query(
+        "DELETE FROM push_subscriptions WHERE user_id = $1 AND endpoint = $2",
+        [auth.userId, parsed.data.endpoint]
+      );
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ error: "Failed to remove subscription" });
+    }
+  });
+
+  // ── Push: send test notification ──────────────────────────────────────────────
+  app.post("/api/push/test", pushLimiter, async (req, res) => {
+    const token = req.headers.authorization?.replace("Bearer ", "");
+    if (!token) return res.status(401).json({ error: "Unauthorized" });
+    const auth = verifyUserToken(token);
+    if (!auth) return res.status(401).json({ error: "Invalid token" });
+
+    if (!VAPID_PUBLIC_KEY || !VAPID_PRIVATE_KEY) {
+      return res.status(503).json({ error: "Push notifications not configured on this server." });
+    }
+
+    try {
+      const subsRes = await pool.query(
+        "SELECT * FROM push_subscriptions WHERE user_id = $1",
+        [auth.userId]
+      );
+
+      if (subsRes.rows.length === 0) {
+        return res.status(400).json({ error: "No push subscription found. Enable notifications first." });
+      }
+
+      const payload = JSON.stringify({
+        title: "Learning Tracker 🔥",
+        body: "Push notifications are working! Keep up the daily grind.",
+      });
+
+      const results = await Promise.allSettled(
+        subsRes.rows.map((sub) =>
+          webpush.sendNotification(
+            { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
+            payload
+          )
+        )
+      );
+
+      // Clean up expired/invalid subscriptions (410 Gone)
+      for (let i = 0; i < results.length; i++) {
+        const result = results[i];
+        if (result.status === "rejected") {
+          const err = result.reason as any;
+          if (err?.statusCode === 410 || err?.statusCode === 404) {
+            await pool.query(
+              "DELETE FROM push_subscriptions WHERE user_id = $1 AND endpoint = $2",
+              [auth.userId, subsRes.rows[i].endpoint]
+            );
+          }
+        }
+      }
+
+      const successCount = results.filter((r) => r.status === "fulfilled").length;
+      if (successCount === 0) {
+        return res.status(500).json({ error: "Failed to send notification. Your subscription may have expired — try re-enabling notifications." });
+      }
+
+      res.json({ success: true, sent: successCount });
+    } catch (err) {
+      console.error("Push test error:", err);
+      res.status(500).json({ error: "Failed to send test notification" });
     }
   });
 
