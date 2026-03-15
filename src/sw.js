@@ -36,7 +36,7 @@ self.addEventListener('fetch', (event) => {
 
   // Skip non-GET, WebSocket, and cross-origin
   if (event.request.method !== 'GET') return;
-  if (!url.origin === self.location.origin) return;
+  if (url.origin !== self.location.origin) return;
 
   // API routes: network-first, fall back to cache
   if (url.pathname.startsWith('/api/state/') || url.pathname === '/api/leaderboard') {

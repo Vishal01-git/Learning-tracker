@@ -33,7 +33,7 @@ const pool = new Pool({
 // ─── Zod Schemas ──────────────────────────────────────────────────────────────
 const InitUserSchema = z.object({
   name: z.string().min(1).max(50).trim(),
-  username: z.string().min(1).max(30).trim().transform((v) => v.toLowerCase().replace(/^@/, "")),
+  username: z.string().min(1).max(30).trim().toLowerCase().replace(/^@/, ""),
   roomId: z.string().min(1).max(50).trim().default("default"),
 });
 
@@ -115,7 +115,8 @@ const initDb = async () => {
         id SERIAL PRIMARY KEY,
         user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         used_on TEXT NOT NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE (user_id, used_on)
       );
 
       DROP TABLE IF EXISTS task_mandatory_settings;

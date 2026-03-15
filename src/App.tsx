@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from "react"
 import {
   Brain, Database, Terminal, Briefcase, Plus, Users, Flame, LogOut, Share2,
   X, Info, Trash2, Edit2, Settings2, Trophy, Medal, Zap, ChevronRight,
-  ChevronLeft, Loader2, Wifi, WifiOff, User, BookOpen, BarChart2, Snowflake, Layers,
+  Loader2, WifiOff, User, BookOpen, BarChart2, Snowflake, Layers,
 } from "lucide-react";
 import { cn, User as UserType, Task, Log, AppState, StreakFreeze } from "./types";
 import confetti from "canvas-confetti";
@@ -14,12 +14,12 @@ import {
 import { calculateXP, calculateLevel, calculateBadges, getLeagueInfo, getStreak, canUseStreakFreeze } from "./utils/gamification";
 import { useWebSocket } from "./hooks/useWebSocket";
 import { useOfflineQueue } from "./hooks/useOfflineQueue";
-import { ConfirmModal } from "./componenets/ConfirmModal";
-import { HeatmapTooltip } from "./componenets/HeatmapTooltip";
-import { JournalView } from "./componenets/JournalView";
-import { WeeklySummary } from "./componenets/WeeklySummary";
-import { ProfileSettings } from "./componenets/ProfileSettings";
-import { TaskTemplates } from "./componenets/TaskTemplates";
+import { ConfirmModal } from "./components/ConfirmModal";
+import { HeatmapTooltip } from "./components/HeatmapTooltip";
+import { JournalView } from "./components/JournalView";
+import { WeeklySummary } from "./components/WeeklySummary";
+import { ProfileSettings } from "./components/ProfileSettings";
+import { TaskTemplates } from "./components/TaskTemplates";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 const parseLogDetails = (detailsString?: string) => {
