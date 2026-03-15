@@ -241,7 +241,7 @@ async function startServer() {
   app.post("/api/init-user", initUserLimiter, async (req, res) => {
     const parsed = InitUserSchema.safeParse(req.body);
     if (!parsed.success) {
-      return res.status(400).json({ error: parsed.error.errors[0]?.message || "Invalid input" });
+      return res.status(400).json({ error: parsed.error.issues[0]?.message || "Invalid input" });
     }
 
     const { name, username, roomId } = parsed.data;
