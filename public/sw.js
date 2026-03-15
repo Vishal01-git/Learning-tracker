@@ -25,9 +25,16 @@ self.addEventListener('activate', (event) => {
           .filter((k) => k !== CACHE_NAME && k !== API_CACHE)
           .map((k) => caches.delete(k))
       )
-    )
+    ).then(() => {
+      // Take control of all open tabs immediately
+      return self.clients.claim();
+    }).then(() => {
+      // Tell all clients to reload so they get the new version
+      return self.clients.matchAll({ type: 'window' }).then((clients) => {
+        clients.forEach((client) => client.navigate(client.url));
+      });
+    })
   );
-  self.clients.claim();
 });
 
 // ── Fetch ─────────────────────────────────────────────────────────────────────
