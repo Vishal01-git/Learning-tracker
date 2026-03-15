@@ -2,15 +2,11 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from "react"
 import {
   Brain, Database, Terminal, Briefcase, Plus, Users, Flame, LogOut, Share2,
   X, Info, Trash2, Edit2, Settings2, Trophy, Medal, Zap, ChevronRight,
-  Loader2, WifiOff, User, BookOpen, BarChart2, Snowflake, Layers,
+  Loader2, WifiOff, User, BookOpen, LayoutDashboard, Snowflake, Layers,
 } from "lucide-react";
 import { cn, User as UserType, Task, Log, AppState, StreakFreeze } from "./types";
 import confetti from "canvas-confetti";
 import { motion, AnimatePresence } from "framer-motion";
-import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip,
-  Legend, ResponsiveContainer, PieChart, Pie, Cell,
-} from "recharts";
 import { calculateXP, calculateLevel, calculateBadges, getLeagueInfo, getStreak, canUseStreakFreeze } from "./utils/gamification";
 import { useWebSocket } from "./hooks/useWebSocket";
 import { useOfflineQueue } from "./hooks/useOfflineQueue";
@@ -102,7 +98,7 @@ class ErrorBoundary extends React.Component<
 
 // ─── Main App ─────────────────────────────────────────────────────────────────
 export default function App() {
-  const [activeTab, setActiveTab] = useState<"dashboard" | "analytics" | "journal" | "weekly">("dashboard");
+  const [activeTab, setActiveTab] = useState<"dashboard" | "journal" | "weekly">("dashboard");
   const [user, setUser] = useState<UserType | null>(null);
   const [token, setToken] = useState<string | null>(null);
   const [roomId, setRoomId] = useState<string>("default");
@@ -142,8 +138,15 @@ export default function App() {
   const [isAdminLoggingIn, setIsAdminLoggingIn] = useState(false);
   const [adminData, setAdminData] = useState<any>(null);
   const [leaderboard, setLeaderboard] = useState<any[]>([]);
+  const [adminConfirmModal, setAdminConfirmModal] = useState<{
+    isOpen: boolean;
+    userId: string;
+    userName: string;
+  }>({ isOpen: false, userId: "", userName: "" });
+  const [roomIdCopied, setRoomIdCopied] = useState(false);
 
   const today = new Date().toISOString().split("T")[0];
+  const cleanedHandle = handle.toLowerCase().replace(/^@/, "").replace(/[^a-z0-9_]/g, "");
 
   // ── WebSocket message handler ────────────────────────────────────────────────
   const handleWsMessage = useCallback((message: any) => {
@@ -233,8 +236,20 @@ export default function App() {
 
   useEffect(() => {
     fetchLeaderboard();
-    const interval = setInterval(fetchLeaderboard, 30000);
-    return () => clearInterval(interval);
+    const interval = setInterval(() => {
+      if (document.visibilityState === "visible") {
+        fetchLeaderboard();
+      }
+    }, 30000);
+    // Also refetch when tab becomes visible again after being hidden
+    const handleVisibility = () => {
+      if (document.visibilityState === "visible") fetchLeaderboard();
+    };
+    document.addEventListener("visibilitychange", handleVisibility);
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener("visibilitychange", handleVisibility);
+    };
   }, [fetchLeaderboard]);
 
   // ── Heatmap auto-scroll ──────────────────────────────────────────────────────
@@ -270,6 +285,11 @@ export default function App() {
   const handleJoin = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!userName.trim()) return;
+    if (!cleanedHandle) {
+      setJoinError("Username must contain at least one letter, number, or underscore.");
+      setIsLoggingIn(false);
+      return;
+    }
     setJoinError(null);
     setIsLoggingIn(true);
     try {
@@ -421,6 +441,29 @@ export default function App() {
     [state.tasks, user]
   );
 
+  const journalEntryCount = useMemo(
+    () => state.logs.filter((l) => l.user_id === user?.id && l.details).length,
+    [state.logs, user]
+  );
+
+  // ── Dynamic page title ───────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!user) {
+      document.title = "Learning Tracker";
+      return;
+    }
+    const tabLabels: Record<string, string> = {
+      dashboard: "Dashboard",
+      journal: "Journal",
+      weekly: "Weekly",
+    };
+    const streakText = myStreak > 0 ? ` 🔥${myStreak}` : "";
+    document.title = `${tabLabels[activeTab] || "Dashboard"}${streakText} — Learning Tracker`;
+    return () => {
+      document.title = "Learning Tracker";
+    };
+  }, [activeTab, myStreak, user]);
+
   // ── Heatmap data ─────────────────────────────────────────────────────────────
   const lastDays = useMemo(() => {
     const days: string[] = [];
@@ -470,32 +513,6 @@ export default function App() {
     });
     return map;
   }, [state.logs, user, userTasks, lastDays]);
-
-  // ── Analytics data ───────────────────────────────────────────────────────────
-  const aggregatedData = useMemo(() => {
-    if (!user) return [];
-    const days = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-    const userLogs = state.logs.filter((l) => l.user_id === user.id);
-    const mapped = days.map((day, idx) => ({
-      name: day.substring(0, 3),
-      volume: userLogs.filter((l) => new Date(l.date).getDay() === idx).reduce((acc, l) => acc + (l.value || 0), 0),
-    }));
-    return [...mapped.slice(1), mapped[0]];
-  }, [state.logs, user]);
-
-  const pieData = useMemo(() => {
-    if (!user) return [];
-    const userLogs = state.logs.filter((l) => l.user_id === user.id);
-    return ["sql", "pyspark", "project", "custom"]
-      .map((type) => {
-        const taskIds = state.tasks.filter((t) => t.user_id === user.id && t.type === type).map((t) => t.id);
-        const value = userLogs.filter((l) => taskIds.includes(l.task_id)).reduce((acc, l) => acc + (l.value || 0), 0);
-        return { name: type.toUpperCase(), value };
-      })
-      .filter((d) => d.value > 0);
-  }, [state.logs, state.tasks, user]);
-
-  const COLORS: Record<string, string> = { SQL: "#3b82f6", PYSPARK: "#f59e0b", PROJECT: "#8b5cf6", CUSTOM: "#10b981" };
 
   // ── Admin ────────────────────────────────────────────────────────────────────
   const fetchAdminData = async (t: string) => {
@@ -567,12 +584,7 @@ export default function App() {
                       <div className="text-[10px] text-white/40 uppercase tracking-widest">Room: {u.room_id}</div>
                     </div>
                     <button
-                      onClick={() => {
-                        if (confirm(`Delete ${u.name}? This is permanent.`)) {
-                          fetch(`/api/admin/user/${u.id}`, { method: "DELETE", headers: { Authorization: adminToken } })
-                            .then(() => fetchAdminData(adminToken));
-                        }
-                      }}
+                      onClick={() => setAdminConfirmModal({ isOpen: true, userId: u.id, userName: u.name })}
                       className="p-2 text-white/20 hover:text-red-400 rounded-lg transition-colors"
                     >
                       <X className="w-4 h-4" />
@@ -619,6 +631,23 @@ export default function App() {
               </div>
             </div>
           </div>
+          <ConfirmModal
+            isOpen={adminConfirmModal.isOpen}
+            title="Delete User"
+            message={`Permanently delete ${adminConfirmModal.userName} and all their data? This cannot be undone.`}
+            confirmLabel="Delete User"
+            variant="danger"
+            onConfirm={() => {
+              fetch(`/api/admin/user/${adminConfirmModal.userId}`, {
+                method: "DELETE",
+                headers: { Authorization: adminToken! },
+              }).then(() => {
+                fetchAdminData(adminToken!);
+                setAdminConfirmModal({ isOpen: false, userId: "", userName: "" });
+              });
+            }}
+            onCancel={() => setAdminConfirmModal({ isOpen: false, userId: "", userName: "" })}
+          />
         </div>
       </div>
     );
@@ -647,7 +676,9 @@ export default function App() {
               />
             </div>
             <div>
-              <label className="block text-xs font-semibold uppercase tracking-wider text-white/50 mb-2">Unique Handle (@username)</label>
+              <label className="block text-xs font-semibold uppercase tracking-wider text-white/50 mb-2">
+                Unique Handle (@username)
+              </label>
               <input
                 type="text"
                 value={handle}
@@ -656,6 +687,16 @@ export default function App() {
                 placeholder="vsharma99"
                 required
               />
+              {handle && cleanedHandle !== handle.toLowerCase().replace(/^@/, "") && (
+                <p className="text-[10px] text-yellow-400/80 mt-1.5 ml-1">
+                  Will be saved as: <span className="font-bold text-yellow-400">@{cleanedHandle || "..."}</span>
+                </p>
+              )}
+              {handle && !cleanedHandle && (
+                <p className="text-[10px] text-red-400 mt-1.5 ml-1">
+                  Username must contain at least one letter, number, or underscore.
+                </p>
+              )}
             </div>
             <div>
               <label className="block text-xs font-semibold uppercase tracking-wider text-white/50 mb-2">Room ID (for collaboration)</label>
@@ -837,15 +878,14 @@ export default function App() {
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto p-4 sm:p-6 space-y-6">
+      <main className="max-w-7xl mx-auto p-4 sm:p-6 space-y-6 pb-24 md:pb-6">
         {/* Tabs */}
-        <div className="flex gap-1 border-b border-white/10 pb-0 overflow-x-auto no-scrollbar">
+        <div className="hidden md:flex gap-1 border-b border-white/10 pb-0 overflow-x-auto no-scrollbar">
           {[
-            { key: "dashboard", label: "Dashboard", icon: <BarChart2 className="w-3.5 h-3.5" /> },
-            { key: "analytics", label: "Analytics", icon: <BarChart2 className="w-3.5 h-3.5" /> },
-            { key: "journal", label: "Journal", icon: <BookOpen className="w-3.5 h-3.5" /> },
-            { key: "weekly", label: "Weekly", icon: <Zap className="w-3.5 h-3.5" /> },
-          ].map(({ key, label, icon }) => (
+            { key: "dashboard", label: "Dashboard", icon: <LayoutDashboard className="w-3.5 h-3.5" />, badge: null },
+            { key: "journal", label: "Journal", icon: <BookOpen className="w-3.5 h-3.5" />, badge: journalEntryCount > 0 ? journalEntryCount : null },
+            { key: "weekly", label: "Weekly", icon: <Zap className="w-3.5 h-3.5" />, badge: null },
+          ].map(({ key, label, icon, badge }) => (
             <button
               key={key}
               onClick={() => setActiveTab(key as any)}
@@ -856,6 +896,13 @@ export default function App() {
               }`}
             >
               {icon} {label}
+              {badge !== null && (
+                <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ml-0.5 ${
+                  activeTab === key ? "bg-emerald-400/20 text-emerald-400" : "bg-white/10 text-white/40"
+                }`}>
+                  {badge}
+                </span>
+              )}
             </button>
           ))}
         </div>
@@ -934,7 +981,11 @@ export default function App() {
                   </h2>
                   <div className="flex gap-2 overflow-x-auto no-scrollbar items-center">
                     {/* Streak freeze button */}
-                    {canFreeze && selectedDate !== today && !activityMap[selectedDate]?.completedCount && (
+                    {canFreeze && selectedDate !== today && (() => {
+                      const dayData = activityMap[selectedDate];
+                      if (!dayData) return true; // no data = show button
+                      return dayData.completedCount < dayData.totalMandatory; // show if not ALL tasks complete
+                    })() && (
                       <button
                         onClick={() => useStreakFreeze(selectedDate)}
                         className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-500/10 border border-blue-500/30 rounded-lg text-blue-400 text-[10px] font-bold hover:bg-blue-500/20 transition-colors whitespace-nowrap"
@@ -1104,6 +1155,32 @@ export default function App() {
                       </div>
                     );
                   })}
+
+                  {/* Show invite hint when user is alone */}
+                  {state.users.length <= 1 && (
+                    <div className="mt-2 p-3 border border-dashed border-white/10 rounded-xl">
+                      <p className="text-[10px] text-white/30 mb-2 leading-relaxed">
+                        Invite a teammate — share your Room ID and they join with the same ID on the login screen.
+                      </p>
+                      <button
+                        onClick={() => {
+                          navigator.clipboard.writeText(roomId).then(() => {
+                            setRoomIdCopied(true);
+                            setTimeout(() => setRoomIdCopied(false), 2000);
+                          }).catch(() => {});
+                        }}
+                        className="w-full flex items-center justify-between px-3 py-2 bg-white/5 hover:bg-white/10 rounded-lg transition-colors group"
+                        title="Click to copy Room ID"
+                      >
+                        <span className="text-[11px] font-bold text-white/60 group-hover:text-white transition-colors font-mono">
+                          {roomId}
+                        </span>
+                        <span className={`text-[9px] uppercase tracking-widest transition-colors ${roomIdCopied ? "text-emerald-400" : "text-white/30 group-hover:text-emerald-400"}`}>
+                          {roomIdCopied ? "Copied!" : "Copy"}
+                        </span>
+                      </button>
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -1146,59 +1223,39 @@ export default function App() {
           </div>
         )}
 
-        {/* ── Analytics Tab ───────────────────────────────────────────────────── */}
-        {activeTab === "analytics" && (
-          <ErrorBoundary>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <div className="bg-[#1A1A1A] p-5 rounded-2xl border border-white/10 flex flex-col" style={{ height: "clamp(280px, 40vh, 400px)" }}>
-                <h2 className="text-base font-bold mb-4">Productivity by Day</h2>
-                <div className="flex-1 min-h-0">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={aggregatedData}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#ffffff1a" vertical={false} />
-                      <XAxis dataKey="name" stroke="#ffffff44" tick={{ fill: "#ffffff66", fontSize: 11 }} />
-                      <YAxis stroke="#ffffff44" tick={{ fill: "#ffffff66", fontSize: 11 }} />
-                      <RechartsTooltip cursor={{ fill: "#ffffff08" }} contentStyle={{ backgroundColor: "#2A2A2A", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "8px", fontSize: "12px" }} itemStyle={{ color: "#fff" }} />
-                      <Bar dataKey="volume" fill="#10b981" radius={[4, 4, 0, 0]} />
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-              </div>
-              <div className="bg-[#1A1A1A] p-5 rounded-2xl border border-white/10 flex flex-col" style={{ height: "clamp(280px, 40vh, 400px)" }}>
-                <h2 className="text-base font-bold mb-4">Focus Distribution</h2>
-                <div className="flex-1 min-h-0">
-                  {pieData.length > 0 ? (
-                    <ResponsiveContainer width="100%" height="100%">
-                      <PieChart>
-                        <Pie data={pieData} cx="50%" cy="50%" innerRadius="40%" outerRadius="60%" paddingAngle={5} dataKey="value">
-                          {pieData.map((entry: any, i: number) => (
-                            <Cell key={`cell-${i}`} fill={COLORS[entry.name] || "#10b981"} />
-                          ))}
-                        </Pie>
-                        <RechartsTooltip contentStyle={{ backgroundColor: "#2A2A2A", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "8px", fontSize: "12px" }} itemStyle={{ color: "#fff" }} />
-                        <Legend wrapperStyle={{ fontSize: "11px" }} />
-                      </PieChart>
-                    </ResponsiveContainer>
-                  ) : (
-                    <div className="flex items-center justify-center h-full text-white/20 text-sm">No data yet</div>
-                  )}
-                </div>
-              </div>
-            </div>
-          </ErrorBoundary>
-        )}
-
         {/* ── Journal Tab ─────────────────────────────────────────────────────── */}
         {activeTab === "journal" && (
           <ErrorBoundary>
-            <JournalView logs={state.logs} tasks={state.tasks} userId={user?.id || ""} />
+            <div className="space-y-5">
+              <div className="flex flex-col items-center text-center md:flex-row md:items-start md:text-left md:justify-between">
+                <div>
+                  <h1 className="text-xl font-bold flex items-center justify-center md:justify-start gap-2">
+                    <BookOpen className="w-5 h-5 text-emerald-400" />
+                    Learning Journal
+                  </h1>
+                  <p className="text-[11px] text-white/30 mt-0.5">Your Feynman notes and concept logs, searchable and filterable.</p>
+                </div>
+              </div>
+              <JournalView logs={state.logs} tasks={state.tasks} userId={user?.id || ""} />
+            </div>
           </ErrorBoundary>
         )}
 
         {/* ── Weekly Tab ──────────────────────────────────────────────────────── */}
         {activeTab === "weekly" && (
           <ErrorBoundary>
-            <WeeklySummary logs={state.logs} tasks={state.tasks} userId={user?.id || ""} />
+            <div className="space-y-5">
+              <div className="flex flex-col items-center text-center md:flex-row md:items-start md:text-left md:justify-between">
+                <div>
+                  <h1 className="text-xl font-bold flex items-center justify-center md:justify-start gap-2">
+                    <Zap className="w-5 h-5 text-emerald-400" />
+                    Weekly Digest
+                  </h1>
+                  <p className="text-[11px] text-white/30 mt-0.5">Auto-generated review comparing this week vs last week.</p>
+                </div>
+              </div>
+              <WeeklySummary logs={state.logs} tasks={state.tasks} userId={user?.id || ""} />
+            </div>
           </ErrorBoundary>
         )}
       </main>
@@ -1388,6 +1445,28 @@ export default function App() {
           tasks.forEach((t) => addTask(t.title, t.type, t.target));
         }}
       />
+
+      {/* ── Mobile bottom nav ───────────────────────────────────────────────── */}
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#1A1A1A]/95 backdrop-blur-md border-t border-white/10 px-2 pb-4 sm:pb-safe">
+        <div className="flex items-center justify-around">
+          {[
+            { key: "dashboard", label: "Today", icon: <LayoutDashboard className="w-5 h-5" /> },
+            { key: "journal", label: "Journal", icon: <BookOpen className="w-5 h-5" /> },
+            { key: "weekly", label: "Weekly", icon: <Zap className="w-5 h-5" /> },
+          ].map(({ key, label, icon }) => (
+            <button
+              key={key}
+              onClick={() => setActiveTab(key as any)}
+              className={`flex flex-col items-center gap-0.5 px-4 py-3 transition-all ${
+                activeTab === key ? "text-emerald-400" : "text-white/30"
+              }`}
+            >
+              {icon}
+              <span className="text-[9px] font-bold uppercase tracking-widest">{label}</span>
+            </button>
+          ))}
+        </div>
+      </nav>
     </div>
   );
 }

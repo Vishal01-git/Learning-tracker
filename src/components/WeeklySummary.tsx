@@ -35,7 +35,9 @@ export function WeeklySummary({ logs, tasks, userId }: WeeklySummaryProps) {
     const weekLogs = userLogs.filter((l) => dates.includes(l.date));
     const totalVolume = weekLogs.reduce((sum, l) => sum + (l.value || 0), 0);
 
+    const today = new Date().toISOString().split("T")[0];
     const activeDays = dates.filter((date) =>
+      date <= today &&
       userTasks.some((t) => {
         const log = weekLogs.find((l) => l.task_id === t.id && l.date === date);
         return log && log.value >= t.target_daily;
@@ -43,7 +45,7 @@ export function WeeklySummary({ logs, tasks, userId }: WeeklySummaryProps) {
     );
 
     const missedDays = dates
-      .filter((d) => d <= new Date().toISOString().split("T")[0])
+      .filter((d) => d < today) // strictly past days only — today doesn't count as missed yet
       .filter((d) => !activeDays.includes(d));
 
     const byType: Record<string, number> = {};
@@ -136,10 +138,8 @@ export function WeeklySummary({ logs, tasks, userId }: WeeklySummaryProps) {
     <div className="space-y-6">
       {/* Narrative */}
       <div className="bg-gradient-to-br from-emerald-500/10 to-blue-500/10 border border-emerald-500/20 rounded-2xl p-5">
-        <div className="flex items-center gap-2 mb-2">
-          <Zap className="w-4 h-4 text-emerald-400" />
-          <span className="text-xs font-bold uppercase tracking-widest text-emerald-400">Weekly Digest</span>
-          <span className="text-[10px] text-white/30 ml-auto">{weekLabel(thisWeek)}</span>
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-[10px] text-emerald-400/60 uppercase tracking-widest font-bold">{weekLabel(thisWeek)}</span>
         </div>
         <p className="text-sm text-white/80 leading-relaxed">{generateNarrative()}</p>
       </div>
@@ -188,7 +188,7 @@ export function WeeklySummary({ logs, tasks, userId }: WeeklySummaryProps) {
             {thisStats.missedDays}
           </div>
           <div className="text-[10px] text-white/30 mt-1">
-            {thisStats.missedDays === 0 ? "Perfect week! 🎉" : `${7 - thisStats.missedDays - thisStats.activeDays} days left`}
+            {thisStats.missedDays === 0 ? "Perfect so far! 🎉" : `${thisStats.missedDays} past ${thisStats.missedDays === 1 ? "day" : "days"} missed`}
           </div>
         </div>
 

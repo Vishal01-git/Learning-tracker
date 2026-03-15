@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback } from "react";
+import React, { useState, useRef, useCallback, useEffect } from "react";
 
 interface TooltipData {
   date: string;
@@ -23,8 +23,19 @@ export function HeatmapTooltip({ children }: HeatmapTooltipProps) {
     y: number;
   } | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const hideTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (hideTimeoutRef.current) clearTimeout(hideTimeoutRef.current);
+    };
+  }, []);
 
   const showTooltip = useCallback((e: React.MouseEvent, data: TooltipData) => {
+    if (hideTimeoutRef.current) {
+      clearTimeout(hideTimeoutRef.current);
+      hideTimeoutRef.current = null;
+    }
     if (!containerRef.current) return;
     const rect = containerRef.current.getBoundingClientRect();
     const x = e.clientX - rect.left;
@@ -32,7 +43,9 @@ export function HeatmapTooltip({ children }: HeatmapTooltipProps) {
     setTooltip({ data, x, y });
   }, []);
 
-  const hideTooltip = useCallback(() => setTooltip(null), []);
+  const hideTooltip = useCallback(() => {
+    hideTimeoutRef.current = setTimeout(() => setTooltip(null), 60);
+  }, []);
 
   const formatDate = (dateStr: string) => {
     const d = new Date(dateStr + "T12:00:00");
