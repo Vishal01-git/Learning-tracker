@@ -1,5 +1,5 @@
 import React, { useMemo } from "react";
-import { TrendingUp, TrendingDown, Minus, Target, Zap, BookOpen, AlertCircle } from "lucide-react";
+import { TrendingUp, TrendingDown, Minus, Zap, BookOpen } from "lucide-react";
 import { Log, Task } from "../types";
 
 interface WeeklySummaryProps {

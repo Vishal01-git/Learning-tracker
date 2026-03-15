@@ -33,7 +33,7 @@ const pool = new Pool({
 // ─── Zod Schemas ──────────────────────────────────────────────────────────────
 const InitUserSchema = z.object({
   name: z.string().min(1).max(50).trim(),
-  username: z.string().min(1).max(30).trim().toLowerCase().replace(/^@/, ""),
+  username: z.string().min(1).max(30).trim().transform((v) => v.toLowerCase().replace(/^@/, "")),
   roomId: z.string().min(1).max(50).trim().default("default"),
 });
 
@@ -241,7 +241,7 @@ async function startServer() {
   app.post("/api/init-user", initUserLimiter, async (req, res) => {
     const parsed = InitUserSchema.safeParse(req.body);
     if (!parsed.success) {
-      return res.status(400).json({ error: parsed.error.issues[0]?.message || "Invalid input" });
+      return res.status(400).json({ error: parsed.error.errors[0]?.message || "Invalid input" });
     }
 
     const { name, username, roomId } = parsed.data;

@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { BookOpen, Calendar, ChevronDown, ChevronUp, Search, Tag, X } from "lucide-react";
+import { BookOpen, Calendar, ChevronDown, ChevronUp, Search, X } from "lucide-react";
 import { Log, Task } from "../types";
 
 interface JournalViewProps {
